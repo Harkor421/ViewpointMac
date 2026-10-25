@@ -13,18 +13,18 @@ A ZombieBuddy Java mod that lets [Project Viewpoint](https://steamcommunity.com/
 On a Mac, Project Zomboid gets a legacy OpenGL 2.1 context: 16 texture units and GLSL 1.20. Viewpoint is written for OpenGL 4.5, with GLSL 3.30, direct state access, texture and sampler objects, indirect draws and around 140 texture units. This mod translates between the two. On Windows and Linux it does nothing.
 
 <p align="center">
-  <img src="docs/screenshots/street-third-person.jpg" alt="Viewpoint's third-person camera behind the player on a residential street in Project Zomboid, running on a Mac" width="100%">
+  <img src="docs/screenshots/street-third-person.webp" alt="Viewpoint's third-person camera behind the player on a residential street in Project Zomboid, running on a Mac" width="100%">
 </p>
 
 <table>
   <tr>
-    <td width="33%"><img src="docs/screenshots/gate-day.jpg" alt="Midday, the player turned toward a wooden gate, with the moon up over the houses"></td>
-    <td width="33%"><img src="docs/screenshots/street-dusk.jpg" alt="The same street at dusk, the clouds lit warm from below"></td>
-    <td width="33%"><img src="docs/screenshots/street-night.jpg" alt="The street at night under a sky full of stars"></td>
+    <td width="33%"><img src="docs/screenshots/gate-day.webp" alt="Midday, the player turned toward a wooden gate, with the moon up over the houses"></td>
+    <td width="33%"><img src="docs/screenshots/street-dusk.webp" alt="The same street at dusk, the clouds lit warm from below"></td>
+    <td width="33%"><img src="docs/screenshots/street-night.webp" alt="The street at night under a sky full of stars"></td>
   </tr>
 </table>
 
-<sub>An M5 Pro at 1920x1200, the default pack at its default settings. Each image is the frame Viewpoint composites, read inside the game by <code>tools/screenshot.sh</code>, so the game's interface isn't in it.</sub>
+<sub>An M5 Pro at 1920x1200, the default pack at its default settings. Each image is the frame Viewpoint composites, read inside the game by <code>tools/screenshot.sh</code>, so the game's interface isn't in it; <code>tools/window-frame.py</code> puts it in the macOS window.</sub>
 
 ## How it works
 
@@ -117,6 +117,7 @@ Each tool it uses also works on its own:
 | `tools/contextprobe.sh` | Viewpoint's world pass in the game's legacy context, or in a 4.1 core one with `PROBE_OPTS=-Dcore=1`. |
 | `tools/packplan.sh` | Plans atlas packing offline for given shader pairs. |
 | `tools/screenshot.sh` | Saves Viewpoint's final image from the running game as a JPEG, without the game's interface and without capturing the screen. |
+| `tools/window-frame.py` | Puts a screenshot in a macOS window (title bar, buttons, rounded corners, shadow) on a transparent background. Needs Pillow. |
 
 ### With the game running
 
