@@ -155,6 +155,7 @@ final class Draw {
     }
 
     static void end() {
+        if (FinalProgram.on) FinalProgram.saw(Prog.currentId, Fbo.drawFbo);
         if (Dump.busy) Dump.checkAfter();
         Fbo.touch();
         if (Dump.busy) Dump.afterDraw();

@@ -39,7 +39,9 @@ case "$1" in
       cp -R "$SAVES/$src" "$OUT/pristine" && echo "test save made from $src"
     fi
     rm -rf "$SAVES/$TEST" && cp -R "$OUT/pristine" "$SAVES/$TEST"
-    cp "$ZOMBOID/latestSave.ini" "$OUT/latestSave.ini.player"
+    # The player's Continue, unless it already points at the test save (a run that crashed
+    # before stop could put it back): then the one kept from before stays.
+    head -1 "$ZOMBOID/latestSave.ini" | grep -q "^$TEST" || cp "$ZOMBOID/latestSave.ini" "$OUT/latestSave.ini.player"
     touch "$OUT/started"
     # In a session of its own: stopping this script (or whatever ran it) must never take the game with it.
     (cd "$APP/Java" && /usr/bin/python3 -c 'import os, sys; os.setsid(); os.execv(sys.argv[1], sys.argv[1:])' \

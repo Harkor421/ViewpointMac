@@ -12,6 +12,20 @@ A ZombieBuddy Java mod that lets [Project Viewpoint](https://steamcommunity.com/
 
 On a Mac, Project Zomboid gets a legacy OpenGL 2.1 context: 16 texture units and GLSL 1.20. Viewpoint is written for OpenGL 4.5, with GLSL 3.30, direct state access, texture and sampler objects, indirect draws and around 140 texture units. This mod translates between the two. On Windows and Linux it does nothing.
 
+<p align="center">
+  <img src="docs/screenshots/street-third-person.jpg" alt="Viewpoint's third-person camera behind the player on a residential street in Project Zomboid, running on a Mac" width="100%">
+</p>
+
+<table>
+  <tr>
+    <td width="33%"><img src="docs/screenshots/gate-day.jpg" alt="Midday, the player turned toward a wooden gate, with the moon up over the houses"></td>
+    <td width="33%"><img src="docs/screenshots/street-dusk.jpg" alt="The same street at dusk, the clouds lit warm from below"></td>
+    <td width="33%"><img src="docs/screenshots/street-night.jpg" alt="The street at night under a sky full of stars"></td>
+  </tr>
+</table>
+
+<sub>An M5 Pro at 1920x1200, the default pack at its default settings. Each image is the frame Viewpoint composites, read inside the game by <code>tools/screenshot.sh</code>, so the game's interface isn't in it.</sub>
+
 ## How it works
 
 ### What gets rewritten as it loads
@@ -42,9 +56,9 @@ For diagnostics there are `Dump` (requests in `dump.txt`), `Stats` (counts and G
 
 ## Status
 
-The offline checks pass on an M5 Pro (`tools/test.sh`). The mod compiles and all 64 smoke checks pass. Every shader in Viewpoint's packs (Default, Library, Vivid and Vanilla) and in True Weathers' pack compiles and links, using the atlas where the game would; only Vivid's model glass keeps 7 model textures instead of 8. The 12 installed Workshop add-ons built on Viewpoint go through `Remap`, their shader files compile, and none of the GL calls they keep is missing on the Mac.
+The offline checks pass on an M5 Pro (`tools/test.sh`). The mod compiles and all 111 smoke checks pass. Every shader in Viewpoint's packs (Default, Library, Vivid and Vanilla) and in True Weathers' pack compiles and links, using the atlas where the game would; only Vivid's model glass keeps 7 model textures instead of 8. The 12 installed Workshop add-ons built on Viewpoint go through `Remap`, their shader files compile, and none of the GL calls they keep is missing on the Mac.
 
-Measured in the game on an M5 Pro at 1920x1200 on 2026-10-25: the isometric view runs at about 243 fps, and Viewpoint at 65 to 72 fps with the default pack at its default settings. Halving Viewpoint's render scale doesn't change that, so it isn't limited by pixels: Viewpoint's own GPU passes take about 14.6 ms a frame (light 2.7, clouds 1.5 plus 1.4 for the cloud trace, world 1.4, ambient occlusion 1.0), and the layer adds about 0.8 ms of atlas copies. Earlier test runs showed 27 to 37 fps because of ZombieBuddy's log overlay (see the performance notes).
+Measured in the game on an M5 Pro at 1920x1200 in October 2026, the isometric view runs at about 243 fps. Viewpoint runs at roughly 45 to 75 fps with the default pack at its default settings, depending on the time of day, the weather and how much of the world is in view. What holds it there is the render thread's CPU, inside Apple's OpenGL driver: each of Viewpoint's 5,000 or so draws a frame costs the driver 0.4 to 1.4 µs, and turning Viewpoint's quality options down doesn't change the frame rate. The performance notes below show how that was measured and what the layer does about it.
 
 Workshop add-ons have only been checked offline so far. True Weathers, Immersive Physics & Weather, Recoil & ADS, Advanced Throwables and True Ballistics draw through the layer. Door, Surface, Near Vegetation, QOL, Isometric No More and Immersive Driving don't need anything from it.
 
@@ -102,20 +116,32 @@ Each tool it uses also works on its own:
 | `tools/drawprobe.sh` | What one command of an indirect list costs the driver, issued each way the layer could issue it. `PROBE_OPTS="-Dheavy=1 -Dtimer=1"` adds Viewpoint's targets, textures and a running GPU timer. |
 | `tools/contextprobe.sh` | Viewpoint's world pass in the game's legacy context, or in a 4.1 core one with `PROBE_OPTS=-Dcore=1`. |
 | `tools/packplan.sh` | Plans atlas packing offline for given shader pairs. |
+| `tools/screenshot.sh` | Saves Viewpoint's final image from the running game as a JPEG, without the game's interface and without capturing the screen. |
 
 ### With the game running
 
 - `tools/game.sh start` launches the game with ZombieBuddy's local Lua server and loads a copy of a save (`Apocalypse/vpmac-test`, never the player's own) past "click to start". `tools/game.sh stop` quits and restores the player's Continue. In between you can use `view`, `lua`, `log`, `crash` and `shot`, which captures only the game's window.
 - `tools/dev.sh` compiles into `build/dev-classes`, and the running game watches that folder. Changed method bodies and brand-new classes take effect in about a second.
 - `tools/perfcheck.sh` measures a running game in one go: frame rate, `stats:`, `gpu:` and `profile:`.
-- More requests for `dump.txt` when looking for what costs a frame: `census:S` counts buffer uploads, texture uploads and indirect commands by shape; `atlas:S` counts atlas copies by texture; `hunt:S` samples who hands the game's sprite renderer its work; `cpu:S` logs the CPU time each thread really used, which tells a thread that works from one that waits inside the driver; `spin:N` adds N ns of busy work to every draw the layer starts (`spin:0` stops), and if the frame rate falls by what that adds up to, the render thread's CPU is the limit; `hold-writes:0` sends writes into Viewpoint's stream buffer to GL as they come instead of holding them until the GPU reads it, and `hold-writes:1` holds them again; `tex:ID` and `texa:ID` save a texture's colour or alpha as a PNG; `vp:key=value` sets one of Viewpoint's live settings for an experiment without saving it, and `vp?key` reads one. Touching `patch-game-draws` next to it routes the game's own sprite draws through `GameDraws`, which counts them every 5 s; then `gamedraws` logs one frame of them by program, texture and size, and `gamestate` logs the GL state the first of them meets after a Viewpoint frame.
+- More requests for `dump.txt` when looking for what costs a frame: `census:S` counts buffer uploads, texture uploads and indirect commands by shape; `atlas:S` counts atlas copies by texture; `hunt:S` samples who hands the game's sprite renderer its work; `finalprog` logs which programs draw into the game's framebuffers, the once-a-frame one being Viewpoint's final composite; `cpu:S` logs the CPU time each thread really used, which tells a thread that works from one that waits inside the driver; `spin:N` adds N ns of busy work to every draw the layer starts (`spin:0` stops), and if the frame rate falls by what that adds up to, the render thread's CPU is the limit; `hold-writes:0` sends writes into Viewpoint's stream buffer to GL as they come instead of holding them until the GPU reads it, and `hold-writes:1` holds them again; `tex:ID` and `texa:ID` save a texture's colour or alpha as a PNG; `vp:key=value` sets one of Viewpoint's live settings for an experiment without saving it, and `vp?key` reads one. Touching `patch-game-draws` next to it routes the game's own sprite draws through `GameDraws`, which counts them every 5 s; then `gamedraws` logs one frame of them by program, texture and size, and `gamestate` logs the GL state the first of them meets after a Viewpoint frame.
 - Lines written to `~/Zomboid/viewpointmac/dump.txt` ask for a look inside the next frames (see `Dump`). You can ask for a sampler's texture, `N:bindings`, `after:N` (what program N drew), `uniforms:N`, `set:N:uName=value`, `errors` or `screen`. PNGs go to `dumps/` and value ranges go to the log. `stats:S` logs what the layer did per second over S seconds. `gpu:S` logs Viewpoint's own GPU time per pass along with the layer's (atlas copies, buffer textures, texture views, depth reads). `profile:S` writes `profile.txt`. Requests nothing answers within 20 s are dropped, and `clear` drops them right away.
 - Once per game, a minute after Viewpoint starts drawing for real, the layer measures itself for 20 s (frames per second and counts, then GPU passes) and writes the results to the log. A file named `no-auto-measure` next to `dump.txt` turns this off.
 - Shaders the Mac refuses are saved with their logs under `~/Zomboid/viewpointmac/failed-shaders/`. Programs that use the atlas are saved under `packed-shaders/`, as the game built them.
 
 ## Performance notes
 
-These findings come from `tools/probe.sh` and `tools/bench.sh` on an M5 Pro (macOS 27, "2.1 Metal"), along with what the layer does about each one.
+What the performance work has bought so far, measured in the game on an M5 Pro:
+
+| Change | Before | After |
+|---|---|---|
+| ZombieBuddy's log overlay off in test launches | 38 fps | 70 fps |
+| Depth under the cursor read through a GPU copy (`Readback`) | 34 ms stall | 0.1 ms |
+| Atlas: one shared copy of each texture | 70.8 ms of GPU a second | 40.2 ms |
+| Stream writes held until the GPU reads them (`StreamWrites`) | 45 ms of the render thread a second | 8 ms |
+| World draws with one per-draw value as a constant (`PerDraw`) | 0.53 to 0.83 µs a command | 0.36 to 0.66 µs |
+| The layer's CPU per frame in `tools/bench.sh` | 1.02 ms | 0.81 ms |
+
+The findings behind them come from `tools/probe.sh`, `tools/drawprobe.sh`, `tools/contextprobe.sh` and `tools/bench.sh` on an M5 Pro (macOS 27, "2.1 Metal"), and from measuring the running game.
 
 - A `glReadPixels` of `DEPTH_COMPONENT`/`FLOAT` into a pixel-pack buffer blocks the CPU until the GPU has finished everything queued, 34 ms behind 35 ms of work. Color reads into a pack buffer (`RED`/`RG`/`RGBA` as `FLOAT`) don't wait. Viewpoint reads the depth under the cursor every frame, so `Readback` copies that depth on the GPU into an R32F target and reads that instead. The bits come out identical and the read takes about 0.1 ms.
 - `EXT_timer_query` works, but `ARB_timer_query` doesn't exist. `Timers` builds `glQueryCounter` timestamps from a chain of elapsed-time queries. Each switch costs about 35 µs of CPU, so the timers only run when asked for. Occlusion queries go straight to GL.
