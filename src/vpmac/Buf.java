@@ -79,6 +79,8 @@ final class Buf {
     }
 
     static void bind(int target, int buffer) {
+        // A pixel transfer through it reads or writes it on the GPU: what is held goes first.
+        if (target == G.PIXEL_PACK_BUFFER || target == G.PIXEL_UNPACK_BUFFER) StreamWrites.flush(buffer);
         bound.put(target, buffer);
         if (target == G.PIXEL_PACK_BUFFER) packBound = buffer;
         if (target == G.ELEMENT_ARRAY_BUFFER) Vao.elementBuffer(buffer);
@@ -86,6 +88,8 @@ final class Buf {
     }
 
     static void forget(int buffer) {
+        Streams.forget(buffer);
+        StreamWrites.drop(buffer);
         Info i = infos.remove(buffer);
         if (i != null && i.data != null) MemoryUtil.memFree(i.data);
         bound.replaceAll((t, b) -> b == buffer ? 0 : b);
@@ -113,6 +117,7 @@ final class Buf {
     }
 
     private static Info resize(int buffer, long size) {
+        StreamWrites.drop(buffer);
         Info i = infos.computeIfAbsent(buffer, b -> new Info());
         if (i.data != null && i.size != size) {
             MemoryUtil.memFree(i.data);
@@ -134,11 +139,14 @@ final class Buf {
 
     static void subData(int target, long offset, long size, long address) {
         int buffer = bound(target);
+        if (Census.on) Census.subData(buffer, size);
+        Streams.prepare(target, buffer);
         Info i = infos.get(buffer);
         if (i != null) {
             if (i.data != null && offset + size <= i.size) MemoryUtil.memCopy(address, MemoryUtil.memAddress(i.data) + offset, size);
             wrote(i, offset, offset + size);
         }
+        if (StreamWrites.hold(target, buffer, i, offset, size)) return;
         on(target, real -> GL15.nglBufferSubData(real, offset, size, address));
     }
 
@@ -161,6 +169,7 @@ final class Buf {
     /** The whole buffer mapped (the Mac has no range mapping), and the range handed out. */
     static ByteBuffer mapRange(int target, long offset, long length, int access) {
         int buffer = bound(target);
+        StreamWrites.flush(buffer);
         int mode = (access & 3) == 3 ? GL15.GL_READ_WRITE : (access & 2) != 0 ? GL15.GL_WRITE_ONLY : GL15.GL_READ_ONLY;
         ByteBuffer[] whole = new ByteBuffer[1];
         on(target, real -> whole[0] = GL15.glMapBuffer(real, mode));
@@ -211,6 +220,7 @@ final class Buf {
         if (i != null && i.data != null && !i.gpuWritten && offset + out.remaining() <= i.size) {
             MemoryUtil.memCopy(MemoryUtil.memAddress(i.data) + offset, MemoryUtil.memAddress(out), out.remaining());
         } else {
+            StreamWrites.flush(buffer);
             onBuffer(buffer, real -> GL15.glGetBufferSubData(real, offset, out));
         }
     }
@@ -224,6 +234,7 @@ final class Buf {
         } else {
             tmp = MemoryUtil.memAlloc((int) size);
             owned = true;
+            StreamWrites.flush(read);
             final ByteBuffer t = tmp;
             onBuffer(read, real -> GL15.glGetBufferSubData(real, readOffset, t));
         }
@@ -255,6 +266,7 @@ final class Buf {
             }
             if (i.data != null) MemoryUtil.memCopy(MemoryUtil.memAddress(fill), MemoryUtil.memAddress(i.data), i.size);
             wrote(i, 0, i.size);
+            StreamWrites.drop(buffer);
             onBuffer(buffer, real -> GL15.glBufferSubData(real, 0, fill));
         } finally {
             MemoryUtil.memFree(fill);

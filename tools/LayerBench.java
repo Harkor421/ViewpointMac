@@ -118,7 +118,7 @@ public class LayerBench {
         int cmds = G.glCreateBuffers();
         G.glBindBuffer(G.DRAW_INDIRECT_BUFFER, cmds);
         ByteBuffer c = BufferUtils.createByteBuffer(50 * 16);
-        for (int i = 0; i < 50; i++) c.putInt(3).putInt(2).putInt(0).putInt(i * 2);
+        for (int i = 0; i < 50; i++) c.putInt(3).putInt(1).putInt(0).putInt(i * 2);
         c.flip();
         G.glBufferData(G.DRAW_INDIRECT_BUFFER, c.remaining(), 0x88E4);
         G.glBufferSubData(G.DRAW_INDIRECT_BUFFER, 0, c);

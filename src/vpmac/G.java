@@ -204,11 +204,13 @@ public final class G {
     }
 
     public static void glTexSubImage2D(int target, int level, int x, int y, int w, int h, int fmt, int type, ByteBuffer px) {
+        if (Census.on) Census.texSubImage(boundTexture(target), w, h);
         Tex.touch(boundTexture(target));
         onBound(target, () -> GL11.glTexSubImage2D(target, level, x, y, w, h, fmt, type, px));
     }
 
     public static void glTexSubImage2D(int target, int level, int x, int y, int w, int h, int fmt, int type, FloatBuffer px) {
+        if (Census.on) Census.texSubImage(boundTexture(target), w, h);
         Tex.touch(boundTexture(target));
         onBound(target, () -> GL11.glTexSubImage2D(target, level, x, y, w, h, fmt, type, px));
     }
@@ -494,10 +496,12 @@ public final class G {
     }
 
     public static void glGetBufferSubData(int target, long offset, FloatBuffer data) {
+        StreamWrites.flush(Buf.bound(target));
         Buf.on(target, real -> GL15.glGetBufferSubData(real, offset, data));
     }
 
     public static void glGetBufferSubData(int target, long offset, ByteBuffer data) {
+        StreamWrites.flush(Buf.bound(target));
         Buf.on(target, real -> GL15.glGetBufferSubData(real, offset, data));
     }
 
@@ -651,6 +655,7 @@ public final class G {
 
     public static void glDrawArrays(int mode, int first, int count) {
         if (!Draw.begin()) return;
+        StreamWrites.beforeDraw(true);
         NoAttribs.before(first + count);
         GL11.glDrawArrays(mode, first, count);
         NoAttribs.after();
@@ -659,6 +664,7 @@ public final class G {
 
     public static void glDrawArraysInstanced(int mode, int first, int count, int instances) {
         if (!Draw.begin()) return;
+        StreamWrites.beforeDraw(true);
         NoAttribs.before(first + count);
         ARBDrawInstanced.glDrawArraysInstancedARB(mode, first, count, instances);
         NoAttribs.after();
@@ -667,6 +673,7 @@ public final class G {
 
     public static void glDrawArraysInstancedBaseInstance(int mode, int first, int count, int instances, int baseInstance) {
         if (!Draw.begin()) return;
+        StreamWrites.beforeDraw(true);
         Vao.shiftInstances(baseInstance);
         NoAttribs.before(first + count);
         ARBDrawInstanced.glDrawArraysInstancedARB(mode, first, count, instances);
@@ -779,12 +786,14 @@ public final class G {
 
     /** One indexed draw; the caller has lent attribute 0 if the program needs one (see {@link NoAttribs}). */
     static void elements(int mode, int count, int type, long offset, int instances, int baseVertex) {
-        if (baseVertex != 0) {
+        // One instance draws plainly: instance 0 reads the same elements, and the Mac's instanced path costs more.
+        if (instances == 1) {
+            if (baseVertex != 0) ARBDrawElementsBaseVertex.glDrawElementsBaseVertex(mode, count, type, offset, baseVertex);
+            else GL11.glDrawElements(mode, count, type, offset);
+        } else if (baseVertex != 0) {
             ARBDrawElementsBaseVertex.glDrawElementsInstancedBaseVertex(mode, count, type, offset, instances, baseVertex);
-        } else if (instances != 1) {
-            ARBDrawInstanced.glDrawElementsInstancedARB(mode, count, type, offset, instances);
         } else {
-            GL11.glDrawElements(mode, count, type, offset);
+            ARBDrawInstanced.glDrawElementsInstancedARB(mode, count, type, offset, instances);
         }
     }
 

@@ -57,9 +57,10 @@ final class Prog {
         final Map<String, Integer> rectLocation = new HashMap<>();
         final Map<String, Integer> modeLocation = new HashMap<>();
         /** What {@link Atlas#sync} last saw and sent, so a draw like the one before costs no lookups. */
-        int[] atlasTextures, atlasSizes;
+        int[] atlasTextures;
+        /** All its packed textures read from the full-float sheet (it couldn't spare a unit for two sheets). */
+        boolean atlasFullOnly;
         float[][] atlasSent;
-        Object atlasSheet;
         /** Uniforms that no longer exist in the program but Viewpoint still sets: merged, then packed. */
         final List<String> fake = new ArrayList<>();
         int fakeBase = 1 << 20;
@@ -196,7 +197,7 @@ final class Prog {
         p.planVersion = -1;
         boolean ok = linkOnce(program, p);
         int kept = ModelSlots.count;
-        boolean hasModelTextures = false;
+        boolean fullOnly = false, hasModelTextures = false;
         for (int sh : p.shaders) {
             Shader s = shaders.get(sh);
             if (s != null && s.result != null && s.result.modelTextures > 0) hasModelTextures = true;
@@ -224,11 +225,14 @@ final class Prog {
             candidates.sort(java.util.Comparator.comparingInt(Glsl::cost).thenComparing(n -> -shared.get(n)));
             List<String> pack = new ArrayList<>(packed);
             if (candidates.isEmpty()) {
-                // Everything that can move into the atlas has: keep one model texture fewer.
-                if (!hasModelTextures || kept <= Glsl.MIN_MODEL_TEXTURES) break;
-                kept--;
+                // Everything that can move into the atlas has. First one sheet instead of two (all
+                // at full precision), then one model texture fewer.
+                if (!fullOnly && !packed.isEmpty()) fullOnly = true;
+                else if (!hasModelTextures || kept <= Glsl.MIN_MODEL_TEXTURES) break;
+                else kept--;
             } else {
-                int more = needed - 16 + (packed.isEmpty() ? 1 : 0);
+                // Packing brings in the two atlas sheets: two units more the first time.
+                int more = needed - 16 + (packed.isEmpty() ? 2 : 0);
                 for (int i = 0; i < candidates.size() && more > 0; i++, more--) pack.add(candidates.get(i));
             }
             for (int sh : p.shaders) {
@@ -236,17 +240,19 @@ final class Prog {
                 if (s == null || s.result == null) continue;
                 List<String> mine = new ArrayList<>();
                 for (String n : pack) if (s.result.packable.contains(n)) mine.add(n);
-                if (mine.equals(s.result.packed) && (s.result.modelTextures == 0 || s.result.modelTextures == kept)) continue;
-                s.result = Glsl.translate(s.original, s.type == VERTEX_SHADER, mine, kept);
+                if (mine.equals(s.result.packed) && (s.result.modelTextures == 0 || s.result.modelTextures == kept)
+                    && (mine.isEmpty() || s.result.atlasFullOnly == fullOnly)) continue;
+                s.result = Glsl.translate(s.original, s.type == VERTEX_SHADER, mine, kept, fullOnly);
                 GL20.glShaderSource(sh, s.result.source);
                 GL20.glCompileShader(sh);
                 compiled(sh);
             }
             Log.info("program " + program + " needs " + needed + " texture units; " + pack.size() + " textures now share the atlas"
-                + (kept < ModelSlots.count ? ", model textures cut to " + kept : ""));
+                + (fullOnly ? ", all in the full-float sheet" : "") + (kept < ModelSlots.count ? ", model textures cut to " + kept : ""));
             ok = linkOnce(program, p);
         }
         p.linked = ok;
+        p.atlasFullOnly = fullOnly;
         if (ok && kept < ModelSlots.count) ModelSlots.atMost(kept);
         p.samplers.clear();
         p.byLocation.clear();
@@ -330,6 +336,10 @@ final class Prog {
                 }
                 if (base.equals(Glsl.MERGED) && !run.isEmpty()) {
                     run.get(0).unit = Merged.UNIT;
+                    run.get(0).virtualTarget = G.T_2D;
+                }
+                if (base.equals(Glsl.ATLAS_FULL) && !run.isEmpty()) {
+                    run.get(0).unit = Atlas.UNIT_FULL;
                     run.get(0).virtualTarget = G.T_2D;
                 }
                 if (base.equals(Glsl.ATLAS) && !run.isEmpty()) {

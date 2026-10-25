@@ -110,6 +110,7 @@ final class Tex {
     static void forget(int texture) {
         infos.remove(texture);
         Fbo.infosChanged();
+        Atlas.forget(texture);
     }
 
     /** Binds {@code texture} on unit 0 just for {@code edit}, then puts back what was there. */
@@ -247,8 +248,11 @@ final class Tex {
 
     /**
      * Copies a buffer's texels into rows of the bound 2D texture, {@link Glsl#BUFFER_WIDTH} a row
-     * starting at {@code firstRow}, GPU-side: the buffer is the pixel source. Only the rows that
-     * {@code range} (bytes of the buffer) touches.
+     * starting at {@code firstRow}: only the rows that {@code range} (bytes of the buffer) touches.
+     * They come from the buffer's CPU copy when it is current: an upload from memory doesn't wait
+     * the way one from a pixel-unpack buffer the GPU may still read does (4.8 against 73 µs in
+     * tools/GlProbe), and what {@link StreamWrites} holds for the buffer can keep waiting. Without
+     * a current copy the buffer itself is the source, GPU-side.
      */
     static void uploadRows(int buffer, long offset, int texels, int ifmt, int firstRow, long[] range) {
         int texel = Formats.texelBytes(ifmt);
@@ -261,15 +265,22 @@ final class Tex {
         Stats.bufferRows += to - from;
         int[] ft = Formats.formatType(ifmt);
         unpacked(() -> {
-            GL15.glBindBuffer(G.PIXEL_UNPACK_BUFFER, buffer);
+            Buf.Info b = Buf.peek(buffer);
+            boolean fromCopy = b != null && b.data != null && !b.gpuWritten
+                && offset + full * rowBytes + rest * (rowBytes / Glsl.BUFFER_WIDTH) <= b.size;
+            long base = fromCopy ? MemoryUtil.memAddress(b.data) : 0;
+            if (!fromCopy) {
+                StreamWrites.flush(buffer);
+                GL15.glBindBuffer(G.PIXEL_UNPACK_BUFFER, buffer);
+            }
             int fullTo = Math.min(to, full);
             if (fullTo > from) {
-                GL11.nglTexSubImage2D(G.T_2D, 0, 0, firstRow + from, Glsl.BUFFER_WIDTH, fullTo - from, ft[0], ft[1], offset + from * rowBytes);
+                GL11.nglTexSubImage2D(G.T_2D, 0, 0, firstRow + from, Glsl.BUFFER_WIDTH, fullTo - from, ft[0], ft[1], base + offset + from * rowBytes);
             }
             if (to > full && rest > 0) {
-                GL11.nglTexSubImage2D(G.T_2D, 0, 0, firstRow + full, rest, 1, ft[0], ft[1], offset + full * rowBytes);
+                GL11.nglTexSubImage2D(G.T_2D, 0, 0, firstRow + full, rest, 1, ft[0], ft[1], base + offset + full * rowBytes);
             }
-            GL15.glBindBuffer(G.PIXEL_UNPACK_BUFFER, 0);
+            if (!fromCopy) GL15.glBindBuffer(G.PIXEL_UNPACK_BUFFER, 0);
         }, true);
     }
 

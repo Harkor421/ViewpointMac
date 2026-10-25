@@ -45,10 +45,14 @@ public final class Glsl {
         public final java.util.List<String> packed;
         /** How many model textures the shader keeps of its texture array ({@link ModelSlots}); 0 when it has none. */
         public final int modelTextures;
+        /** Packed textures all read from the full-float sheet: one atlas sampler instead of two. */
+        public final boolean atlasFullOnly;
 
         Result(String source, Map<String, Integer> locations, Set<String> bufferSamplers, Set<String> sizedShadowSamplers,
-               java.util.List<String> mergedBuffers, java.util.List<String> packable, java.util.List<String> packed, int modelTextures) {
+               java.util.List<String> mergedBuffers, java.util.List<String> packable, java.util.List<String> packed, int modelTextures,
+               boolean atlasFullOnly) {
             this.modelTextures = modelTextures;
+            this.atlasFullOnly = atlasFullOnly;
             this.source = source;
             this.locations = locations;
             this.bufferSamplers = bufferSamplers;
@@ -60,6 +64,8 @@ public final class Glsl {
     }
 
     public static final String ATLAS = "vpmac_atlas";
+    /** The full-float atlas sheet, next to {@link #ATLAS} (half floats) in every program that packs. */
+    public static final String ATLAS_FULL = "vpmac_atlas32";
     public static final String RECT_PREFIX = "vpmac_rect_";
     public static final String MODE_PREFIX = "vpmac_mode_";
 
@@ -102,6 +108,14 @@ public final class Glsl {
 
     /** As above, keeping {@code modelTextures} of the model texture array ({@link #CUT_ARRAYS}' first). */
     public static Result translate(String src, boolean vertex, java.util.List<String> pack, int modelTextures) {
+        return translate(src, vertex, pack, modelTextures, false);
+    }
+
+    /**
+     * As above; with {@code atlasFullOnly} the packed textures all read from the full-float sheet,
+     * which leaves one atlas sampler instead of two, for programs that can't spare the unit.
+     */
+    public static Result translate(String src, boolean vertex, java.util.List<String> pack, int modelTextures, boolean atlasFullOnly) {
         String s = src.replace("\r\n", "\n");
         s = VERSION.matcher(s).replaceAll("");
         s = EXTENSION.matcher(s).replaceAll("");
@@ -164,8 +178,8 @@ public final class Glsl {
             s = s.replaceAll("\\btextureSize\\s*\\(\\s*" + name + "\\s*,[^)]*\\)", SIZE_PREFIX + name);
         }
 
-        return new Result(prelude(s, vertex) + (packed.isEmpty() ? "" : atlasHelpers()) + sizeUniforms + s,
-            locations, bufferSamplers, sized, merged, packable, packed, keptModel);
+        return new Result(prelude(s, vertex) + (packed.isEmpty() ? "" : atlasHelpers(atlasFullOnly)) + sizeUniforms + s,
+            locations, bufferSamplers, sized, merged, packable, packed, keptModel, atlasFullOnly && !packed.isEmpty());
     }
 
     private static final Pattern PLAIN_SAMPLER = Pattern.compile("\\buniform\\s+sampler2D\\s+(\\w+)\\s*;");
@@ -211,39 +225,44 @@ public final class Glsl {
     private static String pack(String s, java.util.List<String> packed) {
         for (String name : packed) {
             String with = "uniform vec4 " + RECT_PREFIX + name + ";\nuniform vec4 " + MODE_PREFIX + name + ";\n"
-                + "#define " + name + " " + ATLAS + ", " + RECT_PREFIX + name + ", " + MODE_PREFIX + name;
+                + "#define " + name + " " + RECT_PREFIX + name + ", " + MODE_PREFIX + name;
             s = s.replaceFirst("\\buniform\\s+sampler2D\\s+" + name + "\\s*;", Matcher.quoteReplacement(with));
         }
         return s;
     }
 
     /**
-     * Texture functions for a region of the atlas. rect: texel origin xy, size zw as stored; mode:
-     * x = 1 repeats, y = 1 samples the nearest texel, zw = the texture's own size when it is
-     * stored smaller (else 0). No mipmaps: every level reads level 0.
+     * Texture functions for a region of an atlas sheet. rect: texel origin xy, size zw as stored;
+     * mode: x = 1 when the texture repeats, plus 2 when it lives in the full-float sheet
+     * ({@link #ATLAS_FULL}, else {@link #ATLAS}); y = 1 samples the nearest texel; zw = the
+     * texture's own size when it is stored smaller (else 0). No mipmaps: every level reads level 0.
+     * The sheet is picked by a uniform, so every invocation takes the same branch. With
+     * {@code fullOnly} there is only the full-float sheet.
      */
-    private static String atlasHelpers() {
-        return "uniform sampler2D " + ATLAS + ";\n"
+    private static String atlasHelpers(boolean fullOnly) {
+        return (fullOnly ? "" : "uniform sampler2D " + ATLAS + ";\n") + "uniform sampler2D " + ATLAS_FULL + ";\n"
+            + (fullOnly ? "#define " + ATLAS + " " + ATLAS_FULL + "\nbool vpmac_full(vec4 m) { return true; }\n" : "bool vpmac_full(vec4 m) { return m.x > 1.5; }\n")
             + "vec2 vpmac_extent(vec4 r, vec4 m) { return m.z > 0.0 ? m.zw : r.zw; }\n"
-            + "vec2 vpmac_uv(sampler2D a, vec4 r, vec4 m, vec2 uv) { vec2 t = uv * r.zw;"
-            + " if (m.x > 0.5) t = mod(t, r.zw);"
+            + "vec2 vpmac_uv(vec4 r, vec4 m, vec2 uv) { vec2 t = uv * r.zw;"
+            + " if (mod(m.x, 2.0) > 0.5) t = mod(t, r.zw);"
             + " t = m.y > 0.5 ? floor(clamp(t, vec2(0.0), r.zw - 1.0)) + 0.5 : clamp(t, vec2(0.5), r.zw - 0.5);"
-            + " return (r.xy + t) / vec2(textureSize2D(a, 0)); }\n"
-            + "vec4 texture(sampler2D a, vec4 r, vec4 m, vec2 uv) { return texture2D(a, vpmac_uv(a, r, m, uv)); }\n"
-            + "vec4 texture(sampler2D a, vec4 r, vec4 m, vec2 uv, float b) { return texture2D(a, vpmac_uv(a, r, m, uv)); }\n"
-            + "vec4 textureLod(sampler2D a, vec4 r, vec4 m, vec2 uv, float l) { return texture2D(a, vpmac_uv(a, r, m, uv)); }\n"
-            + "vec4 textureGrad(sampler2D a, vec4 r, vec4 m, vec2 uv, vec2 dx, vec2 dy) { return texture2D(a, vpmac_uv(a, r, m, uv)); }\n"
-            + "vec4 textureOffset(sampler2D a, vec4 r, vec4 m, vec2 uv, ivec2 o) {"
-            + " return texture2D(a, vpmac_uv(a, r, m, uv + vec2(o) / vpmac_extent(r, m))); }\n"
-            + "vec4 textureLodOffset(sampler2D a, vec4 r, vec4 m, vec2 uv, float l, ivec2 o) {"
-            + " return texture2D(a, vpmac_uv(a, r, m, uv + vec2(o) / vpmac_extent(r, m))); }\n"
-            + "vec4 texelFetch(sampler2D a, vec4 r, vec4 m, ivec2 p, int l) {"
+            + " return (r.xy + t) / vec2(vpmac_full(m) ? textureSize2D(" + ATLAS_FULL + ", 0) : textureSize2D(" + ATLAS + ", 0)); }\n"
+            + "vec4 vpmac_read(vec4 m, vec2 st) { return vpmac_full(m) ? texture2D(" + ATLAS_FULL + ", st) : texture2D(" + ATLAS + ", st); }\n"
+            + "vec4 texture(vec4 r, vec4 m, vec2 uv) { return vpmac_read(m, vpmac_uv(r, m, uv)); }\n"
+            + "vec4 texture(vec4 r, vec4 m, vec2 uv, float b) { return vpmac_read(m, vpmac_uv(r, m, uv)); }\n"
+            + "vec4 textureLod(vec4 r, vec4 m, vec2 uv, float l) { return vpmac_read(m, vpmac_uv(r, m, uv)); }\n"
+            + "vec4 textureGrad(vec4 r, vec4 m, vec2 uv, vec2 dx, vec2 dy) { return vpmac_read(m, vpmac_uv(r, m, uv)); }\n"
+            + "vec4 textureOffset(vec4 r, vec4 m, vec2 uv, ivec2 o) { return vpmac_read(m, vpmac_uv(r, m, uv + vec2(o) / vpmac_extent(r, m))); }\n"
+            + "vec4 textureLodOffset(vec4 r, vec4 m, vec2 uv, float l, ivec2 o) {"
+            + " return vpmac_read(m, vpmac_uv(r, m, uv + vec2(o) / vpmac_extent(r, m))); }\n"
+            + "vec4 texelFetch(vec4 r, vec4 m, ivec2 p, int l) {"
             + " ivec2 q = m.z > 0.0 ? ivec2((vec2(p) + 0.5) * r.zw / m.zw) : p;"
-            + " return texelFetch2D(a, ivec2(r.xy) + clamp(q, ivec2(0), ivec2(r.zw) - 1), 0); }\n"
-            + "ivec2 textureSize(sampler2D a, vec4 r, vec4 m, int l) { return ivec2(vpmac_extent(r, m)); }\n"
-            + "vec4 textureGather(sampler2D a, vec4 r, vec4 m, vec2 uv) { vec2 t = uv * vpmac_extent(r, m) - 0.5; ivec2 i = ivec2(floor(t));"
-            + " return vec4(texelFetch(a, r, m, i + ivec2(0, 1), 0).r, texelFetch(a, r, m, i + ivec2(1, 1), 0).r,"
-            + " texelFetch(a, r, m, i + ivec2(1, 0), 0).r, texelFetch(a, r, m, i, 0).r); }\n";
+            + " ivec2 at = ivec2(r.xy) + clamp(q, ivec2(0), ivec2(r.zw) - 1);"
+            + " return vpmac_full(m) ? texelFetch2D(" + ATLAS_FULL + ", at, 0) : texelFetch2D(" + ATLAS + ", at, 0); }\n"
+            + "ivec2 textureSize(vec4 r, vec4 m, int l) { return ivec2(vpmac_extent(r, m)); }\n"
+            + "vec4 textureGather(vec4 r, vec4 m, vec2 uv) { vec2 t = uv * vpmac_extent(r, m) - 0.5; ivec2 i = ivec2(floor(t));"
+            + " return vec4(texelFetch(r, m, i + ivec2(0, 1), 0).r, texelFetch(r, m, i + ivec2(1, 1), 0).r,"
+            + " texelFetch(r, m, i + ivec2(1, 0), 0).r, texelFetch(r, m, i, 0).r); }\n";
     }
 
     private static String cutArray(String s, String define, String array, int size) {

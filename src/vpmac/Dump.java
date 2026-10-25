@@ -102,6 +102,22 @@ final class Dump {
                     Log.info("Viewpoint may draw again");
                 }
                 else if (w.startsWith("profile:")) Prof.start(Integer.parseInt(w.substring(8)));
+                else if (w.startsWith("vp:")) Tune.set(w.substring(3));
+                else if (w.equals("gamestate")) GameDraws.dumpNext = true;
+                else if (w.equals("gamedraws")) DrawHistogram.wanted = true;
+                else if (w.startsWith("hunt:")) StackHunt.start(Integer.parseInt(w.substring(5)));
+                else if (w.startsWith("census:")) Census.start(Integer.parseInt(w.substring(7)));
+                else if (w.startsWith("cpu:")) CpuClock.start(Integer.parseInt(w.substring(4)));
+                else if (w.startsWith("spin:")) Spin.nanos = Long.parseLong(w.substring(5));
+                else if (w.startsWith("hold-writes:")) {
+                    StreamWrites.on = w.endsWith("1");
+                    if (!StreamWrites.on) StreamWrites.flushAll();
+                    Log.info("stream writes " + (StreamWrites.on ? "held until the GPU reads them" : "sent to GL as they come"));
+                }
+                else if (w.startsWith("atlas:")) AtlasCensus.start(Integer.parseInt(w.substring(6)));
+                else if (w.startsWith("tex:")) texture("tex-" + w.substring(4), Integer.parseInt(w.substring(4)), "a texture by id");
+                else if (w.startsWith("texa:")) AlphaDump.dump(Integer.parseInt(w.substring(5)));
+                else if (w.startsWith("vp?")) Log.info("setting " + w.substring(3) + " = " + Tune.get(w.substring(3)));
                 else if (w.startsWith("after:")) after.add(Integer.parseInt(w.substring(6)));
                 else if (w.startsWith("uniforms:")) uniforms.add(Integer.parseInt(w.substring(9)));
                 else if (w.startsWith("unset:")) overrides.remove(Integer.parseInt(w.substring(6)));

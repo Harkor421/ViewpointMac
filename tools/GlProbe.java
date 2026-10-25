@@ -1,10 +1,12 @@
 import org.lwjgl.BufferUtils;
 import org.lwjgl.glfw.GLFW;
+import org.lwjgl.opengl.ARBDrawInstanced;
 import org.lwjgl.opengl.ARBSync;
 import org.lwjgl.opengl.EXTTimerQuery;
 import org.lwjgl.opengl.GL;
 import org.lwjgl.opengl.GL11;
 import org.lwjgl.opengl.GL12;
+import org.lwjgl.opengl.GL13;
 import org.lwjgl.opengl.GL15;
 import org.lwjgl.opengl.GL20;
 import org.lwjgl.opengl.GL30;
@@ -162,6 +164,8 @@ public class GlProbe {
         }
         time("1000 tiny draws", () -> { for (int i = 0; i < 1000; i++) tiny(); });
         if (caps.GL_EXT_timer_query) loadVersusClear();
+        stateCosts();
+        uploadCosts();
         System.out.println("probe done");
     }
 
@@ -289,6 +293,168 @@ public class GlProbe {
                 mode == 0 ? "drawn over" : mode == 1 ? "cleared first" : "drawn over, two draws each");
         }
         GL11.glEnable(GL11.GL_DEPTH_TEST);
+    }
+
+    /**
+     * What each kind of state change between draws costs the driver, all in: issuing 4000 small
+     * draws with that change before each, then waiting for the GPU (the Mac encodes late, so the
+     * cost can land anywhere up to the finish). Per draw, in microseconds.
+     */
+    static void stateCosts() {
+        int prog = program("#version 120\nattribute vec2 p; attribute vec4 a1; attribute vec4 a2; attribute vec4 a3; varying vec4 c;"
+                + " void main() { c = a1 + a2 + a3; gl_Position = vec4(p * 0.01, 0.5, 1.0); }",
+            "#version 120\nuniform sampler2D t0, t1, t2, t3; uniform float k; varying vec4 c;"
+                + " void main() { gl_FragColor = c + texture2D(t0, vec2(0.5)) + texture2D(t1, vec2(0.5)) + texture2D(t2, vec2(0.5)) + texture2D(t3, vec2(0.5)) + k; }");
+        GL20.glBindAttribLocation(prog, 1, "a1");
+        GL20.glBindAttribLocation(prog, 2, "a2");
+        GL20.glBindAttribLocation(prog, 3, "a3");
+        GL20.glLinkProgram(prog);
+        GL20.glUseProgram(prog);
+        for (int i = 0; i < 4; i++) GL20.glUniform1i(GL20.glGetUniformLocation(prog, "t" + i), i);
+        int k = GL20.glGetUniformLocation(prog, "k");
+        int[] tex = new int[8];
+        for (int i = 0; i < 8; i++) {
+            tex[i] = tex(GL11.GL_RGBA8, GL11.GL_RGBA, GL11.GL_UNSIGNED_BYTE, 4, 4);
+        }
+        for (int i = 0; i < 4; i++) {
+            GL13.glActiveTexture(GL13.GL_TEXTURE0 + i);
+            GL11.glBindTexture(GL11.GL_TEXTURE_2D, tex[i]);
+        }
+        GL13.glActiveTexture(GL13.GL_TEXTURE0);
+        int inst = GL15.glGenBuffers();
+        GL15.glBindBuffer(GL15.GL_ARRAY_BUFFER, inst);
+        GL15.glBufferData(GL15.GL_ARRAY_BUFFER, 16L * 3 * 8192, GL15.GL_STATIC_DRAW);
+        for (int a = 1; a <= 3; a++) {
+            GL20.glVertexAttribPointer(a, 4, GL11.GL_FLOAT, false, 48, (a - 1) * 16L);
+            org.lwjgl.opengl.ARBInstancedArrays.glVertexAttribDivisorARB(a, 1);
+            GL20.glEnableVertexAttribArray(a);
+        }
+        GL15.glBindBuffer(GL15.GL_ARRAY_BUFFER, quadVbo);
+        GL20.glVertexAttribPointer(0, 2, GL11.GL_FLOAT, false, 8, 0L);
+        GL30.glBindFramebuffer(GL30.GL_FRAMEBUFFER, smallFbo);
+        GL11.glViewport(0, 0, 128, 72);
+        GL11.glDisable(GL11.GL_DEPTH_TEST);
+        String[] names = {"nothing changes", "uniform", "4 texture binds, same textures", "4 texture binds, swapped and put back",
+            "3 instanced pointers moved (bind + pointer)", "3 generic attribute values", "active texture switches only", "glGetIntegerv x4"};
+        for (int mode = 0; mode < names.length; mode++) {
+            double best = Double.MAX_VALUE;
+            for (int r = 0; r < 5; r++) {
+                GL11.glFinish();
+                long t = System.nanoTime();
+                for (int d = 0; d < 4000; d++) {
+                    switch (mode) {
+                        case 1 -> GL20.glUniform1f(k, d);
+                        case 2 -> { for (int i = 0; i < 4; i++) { GL13.glActiveTexture(GL13.GL_TEXTURE0 + i); GL11.glBindTexture(GL11.GL_TEXTURE_2D, tex[i]); } }
+                        case 3 -> {
+                            for (int i = 0; i < 4; i++) { GL13.glActiveTexture(GL13.GL_TEXTURE0 + i); GL11.glBindTexture(GL11.GL_TEXTURE_2D, tex[4 + i]); }
+                            GL11.glDrawArrays(GL11.GL_TRIANGLES, 0, 3);
+                            for (int i = 0; i < 4; i++) { GL13.glActiveTexture(GL13.GL_TEXTURE0 + i); GL11.glBindTexture(GL11.GL_TEXTURE_2D, tex[i]); }
+                        }
+                        case 4 -> {
+                            GL15.glBindBuffer(GL15.GL_ARRAY_BUFFER, inst);
+                            for (int a = 1; a <= 3; a++) GL20.glVertexAttribPointer(a, 4, GL11.GL_FLOAT, false, 48, (d & 8191) * 48L + (a - 1) * 16L);
+                            GL15.glBindBuffer(GL15.GL_ARRAY_BUFFER, quadVbo);
+                        }
+                        case 5 -> {
+                            for (int a = 1; a <= 3; a++) { GL20.glDisableVertexAttribArray(a); GL20.glVertexAttrib4f(a, d, 1, 2, 3); }
+                        }
+                        case 6 -> { for (int i = 0; i < 4; i++) GL13.glActiveTexture(GL13.GL_TEXTURE0 + i); }
+                        case 7 -> { for (int i = 0; i < 4; i++) GL11.glGetInteger(GL11.GL_TEXTURE_BINDING_2D); }
+                        default -> { }
+                    }
+                    if (mode == 5) ARBDrawInstanced.glDrawArraysInstancedARB(GL11.GL_TRIANGLES, 0, 3, 1);
+                    else if (mode == 4 || mode == 0) ARBDrawInstanced.glDrawArraysInstancedARB(GL11.GL_TRIANGLES, 0, 3, 1);
+                    else GL11.glDrawArrays(GL11.GL_TRIANGLES, 0, 3);
+                }
+                if (mode == 5) for (int a = 1; a <= 3; a++) GL20.glEnableVertexAttribArray(a);
+                GL11.glFinish();
+                best = Math.min(best, (System.nanoTime() - t) / 1e3 / 4000);
+            }
+            System.out.printf("%8.2f us/draw  %s%n", best, names[mode]);
+        }
+        GL11.glEnable(GL11.GL_DEPTH_TEST);
+        for (int a = 1; a <= 3; a++) GL20.glDisableVertexAttribArray(a);
+    }
+
+    /**
+     * Uploads into a buffer and a texture the GPU is still using, the way Viewpoint streams per-draw
+     * data (23 writes a frame into one 8 MB buffer, a few small textures): glBufferSubData against
+     * writing an unsynchronized mapping (APPLE_flush_buffer_range), and glTexSubImage2D from memory
+     * against from a pixel-unpack buffer. Per write, all in (issue to GPU done).
+     */
+    static void uploadCosts() {
+        int buf = GL15.glGenBuffers();
+        GL15.glBindBuffer(GL15.GL_ARRAY_BUFFER, buf);
+        GL15.glBufferData(GL15.GL_ARRAY_BUFFER, 8L << 20, GL15.GL_DYNAMIC_DRAW);
+        ByteBuffer chunk = BufferUtils.createByteBuffer(6144);
+        int tex = tex(GL11.GL_RGBA8, GL11.GL_RGBA, GL11.GL_UNSIGNED_BYTE, 64, 64);
+        ByteBuffer texels = BufferUtils.createByteBuffer(64 * 64 * 4);
+        int small = GL15.glGenBuffers();
+        GL15.glBindBuffer(GL15.GL_ARRAY_BUFFER, small);
+        GL15.glBufferData(GL15.GL_ARRAY_BUFFER, 64L << 10, GL15.GL_DYNAMIC_DRAW);
+        int pbo = GL15.glGenBuffers();
+        GL15.glBindBuffer(GL30.GL_PIXEL_UNPACK_BUFFER, pbo);
+        GL15.glBufferData(GL30.GL_PIXEL_UNPACK_BUFFER, 64 * 64 * 4 * 8, GL15.GL_STREAM_DRAW);
+        GL15.glBindBuffer(GL30.GL_PIXEL_UNPACK_BUFFER, 0);
+        String[] names = {"bufferSubData 6 KB into a buffer in use", "unsynchronized map + flushMappedBufferRange 6 KB",
+            "texSubImage 64x64 from memory into a texture in use", "texSubImage 64x64 from an unpack buffer",
+            "bufferSubData 6 KB, buffer not serialized (APPLE)", "bufferSubData 6 KB into a 64 KB buffer in use"};
+        for (int mode = 0; mode < names.length; mode++) {
+            if (mode == 1) {
+                GL15.glBindBuffer(GL15.GL_ARRAY_BUFFER, buf);
+                long parameteri = GL.getFunctionProvider().getFunctionAddress("glBufferParameteriAPPLE");
+                org.lwjgl.system.JNI.invokeV(GL15.GL_ARRAY_BUFFER, 0x8A12, GL11.GL_FALSE, parameteri); // BUFFER_SERIALIZED_MODIFY_APPLE
+                org.lwjgl.system.JNI.invokeV(GL15.GL_ARRAY_BUFFER, 0x8A13, GL11.GL_FALSE, parameteri); // BUFFER_FLUSHING_UNMAP_APPLE
+            }
+            double best = Double.MAX_VALUE;
+            for (int r = 0; r < 5; r++) {
+                GL11.glFinish();
+                long t = System.nanoTime();
+                for (int i = 0; i < 230; i++) {
+                    // A draw that uses the buffer and the texture, then a write into each.
+                    GL11.glBindTexture(GL11.GL_TEXTURE_2D, tex);
+                    draw(1);
+                    long offset = (long) (i % 1300) * 6144;
+                    switch (mode) {
+                        case 0 -> {
+                            GL15.glBindBuffer(GL15.GL_ARRAY_BUFFER, buf);
+                            GL15.glBufferSubData(GL15.GL_ARRAY_BUFFER, offset, chunk);
+                        }
+                        case 1 -> {
+                            GL15.glBindBuffer(GL15.GL_ARRAY_BUFFER, buf);
+                            ByteBuffer m = GL15.glMapBuffer(GL15.GL_ARRAY_BUFFER, GL15.GL_WRITE_ONLY);
+                            org.lwjgl.system.MemoryUtil.memCopy(org.lwjgl.system.MemoryUtil.memAddress(chunk), org.lwjgl.system.MemoryUtil.memAddress(m) + offset, 6144);
+                            org.lwjgl.system.JNI.invokePPV(GL15.GL_ARRAY_BUFFER, offset, 6144L, GL.getFunctionProvider().getFunctionAddress("glFlushMappedBufferRangeAPPLE"));
+                            GL15.glUnmapBuffer(GL15.GL_ARRAY_BUFFER);
+                        }
+                        case 2 -> {
+                            GL11.glBindTexture(GL11.GL_TEXTURE_2D, tex);
+                            GL11.glTexSubImage2D(GL11.GL_TEXTURE_2D, 0, 0, 0, 64, 64, GL11.GL_RGBA, GL11.GL_UNSIGNED_BYTE, texels);
+                        }
+                        case 4 -> {
+                            GL15.glBindBuffer(GL15.GL_ARRAY_BUFFER, buf);
+                            GL15.glBufferSubData(GL15.GL_ARRAY_BUFFER, offset, chunk);
+                        }
+                        case 5 -> {
+                            GL15.glBindBuffer(GL15.GL_ARRAY_BUFFER, small);
+                            GL15.glBufferSubData(GL15.GL_ARRAY_BUFFER, (long) (i % 10) * 6144, chunk);
+                        }
+                        case 3 -> {
+                            GL15.glBindBuffer(GL30.GL_PIXEL_UNPACK_BUFFER, pbo);
+                            GL15.glBufferSubData(GL30.GL_PIXEL_UNPACK_BUFFER, (long) (i % 8) * 64 * 64 * 4, texels);
+                            GL11.glBindTexture(GL11.GL_TEXTURE_2D, tex);
+                            GL11.nglTexSubImage2D(GL11.GL_TEXTURE_2D, 0, 0, 0, 64, 64, GL11.GL_RGBA, GL11.GL_UNSIGNED_BYTE, (long) (i % 8) * 64 * 64 * 4);
+                            GL15.glBindBuffer(GL30.GL_PIXEL_UNPACK_BUFFER, 0);
+                        }
+                        default -> { }
+                    }
+                }
+                GL11.glFinish();
+                best = Math.min(best, (System.nanoTime() - t) / 1e3 / 230);
+            }
+            System.out.printf("%8.1f us per draw+write  %s%n", best, names[mode]);
+        }
+        GL15.glBindBuffer(GL15.GL_ARRAY_BUFFER, quadVbo);
     }
 
     static int pickDepth, pickColor, pickFbo, pickProgram;

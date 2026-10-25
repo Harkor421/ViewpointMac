@@ -127,6 +127,7 @@ public class SmokeTest {
         reflectCheck();
         indirectRunCheck(1);
         indirectRunCheck(1 << 30);
+        perDrawChecks();
         mapCheck(vao);
         textureReadCheck();
         stateQueryCheck();
@@ -138,6 +139,13 @@ public class SmokeTest {
         reusedNameCheck(vao);
         queryErrorCheck();
         mapRangeCheck();
+        streamCheck();
+        streamWritesChecks();
+        sharedAtlasCheck(vao);
+        atlasPrecisionCheck(vao);
+        atlasGrowthCheck(vao);
+        fullOnlyCheck(vao);
+        oneSheetCheck(vao);
 
         G.glBindVertexArray(0);
         check("no GL error", GL11.glGetError() == 0);
@@ -432,6 +440,147 @@ public class SmokeTest {
         G.glUseProgram(0);
     }
 
+    /**
+     * Single-instance indirect lists draw plainly with their per-draw data as constants (PerDraw):
+     * each attribute format Viewpoint could give that data, indexed lists too, a list with a
+     * two-instance command (which keeps the instanced path), and the arrays as they were after.
+     */
+    static void perDrawChecks() {
+        ByteBuffer floats = BufferUtils.createByteBuffer(12);
+        floats.putFloat(0).putFloat(1).putFloat(2).flip();
+        perDrawCheck("float", floats, GL11.GL_FLOAT, false, false, "in float aColor", "int(aColor + 0.5)", false, 1);
+        ByteBuffer halves = BufferUtils.createByteBuffer(6);
+        halves.putShort(Float.floatToFloat16(0)).putShort(Float.floatToFloat16(1)).putShort(Float.floatToFloat16(2)).flip();
+        perDrawCheck("half float", halves, Formats.HALF, false, false, "in float aColor", "int(aColor + 0.5)", false, 1);
+        ByteBuffer bytes = BufferUtils.createByteBuffer(3);
+        bytes.put((byte) 0).put((byte) 128).put((byte) 255).flip();
+        perDrawCheck("normalized unsigned byte", bytes, GL11.GL_UNSIGNED_BYTE, true, false, "in float aColor", "int(aColor * 2.0 + 0.5)", false, 1);
+        ByteBuffer shorts = BufferUtils.createByteBuffer(6);
+        shorts.putShort((short) 0).putShort((short) -32767).putShort((short) 32767).flip();
+        perDrawCheck("normalized short", shorts, GL11.GL_SHORT, true, false, "in float aColor", "aColor < -0.5 ? 1 : aColor > 0.5 ? 2 : 0", false, 1);
+        ByteBuffer ints = BufferUtils.createByteBuffer(3);
+        ints.put((byte) 0).put((byte) 1).put((byte) 2).flip();
+        perDrawCheck("integer unsigned byte", ints, GL11.GL_UNSIGNED_BYTE, false, true, "in int aColor", "aColor", false, 1);
+        perDrawCheck("float, indexed", floats, GL11.GL_FLOAT, false, false, "in float aColor", "int(aColor + 0.5)", true, 1);
+        perDrawCheck("float, a two-instance command in the list", floats, GL11.GL_FLOAT, false, false, "in float aColor", "int(aColor + 0.5)", false, 2);
+        perDrawCheck("float, indexed, a two-instance command in the list", floats, GL11.GL_FLOAT, false, false, "in float aColor", "int(aColor + 0.5)", true, 2);
+        twoPerDrawAttributesCheck();
+    }
+
+    /** Two per-draw attributes (where constants cost the Mac more than the instanced array): the list keeps the array. */
+    static void twoPerDrawAttributesCheck() {
+        float[] quads = new float[3 * 8];
+        for (int k = 0; k < 3; k++) {
+            float x0 = -1 + k * 2 / 3f, x1 = -1 + (k + 1) * 2 / 3f;
+            System.arraycopy(new float[] {x0, -1, x1, -1, x0, 1, x1, 1}, 0, quads, k * 8, 8);
+        }
+        int vbo = G.glCreateBuffers();
+        G.glBindBuffer(G.ARRAY_BUFFER, vbo);
+        G.glBufferData(G.ARRAY_BUFFER, BufferUtils.createFloatBuffer(24).put(quads).flip(), 0x88E4);
+        // Per draw: the colour index, and an offset that cancels what was added to it.
+        int data = G.glCreateBuffers();
+        G.glBindBuffer(G.ARRAY_BUFFER, data);
+        G.glBufferData(G.ARRAY_BUFFER, BufferUtils.createFloatBuffer(6).put(new float[] {5, -5, 7, -6, 9, -7}).flip(), 0x88E4);
+        int vao = G.glGenVertexArrays();
+        G.glBindVertexArray(vao);
+        G.glVertexAttribFormat(0, 2, GL11.GL_FLOAT, false, 0);
+        G.glVertexAttribBinding(0, 0);
+        G.glBindVertexBuffer(0, vbo, 0, 8);
+        G.glEnableVertexAttribArray(0);
+        G.glVertexAttribFormat(1, 1, GL11.GL_FLOAT, false, 0);
+        G.glVertexAttribFormat(2, 1, GL11.GL_FLOAT, false, 4);
+        G.glVertexAttribBinding(1, 1);
+        G.glVertexAttribBinding(2, 1);
+        G.glBindVertexBuffer(1, data, 0, 8);
+        G.glVertexBindingDivisor(1, 1 << 30);
+        G.glEnableVertexAttribArray(1);
+        G.glEnableVertexAttribArray(2);
+        int prog = program("#version 330\nlayout(location = 0) in vec2 aPos;\nlayout(location = 1) in float aA;\nlayout(location = 2) in float aB;\n"
+                + "flat out int vColor;\nvoid main() { vColor = int(aA + aB + 0.5); gl_Position = vec4(aPos, 0.0, 1.0); }\n",
+            "#version 330\nflat in int vColor;\nout vec4 fragColor;\n"
+                + "void main() { fragColor = vec4(vColor == 0 ? 1.0 : 0.0, vColor == 1 ? 1.0 : 0.0, vColor == 2 ? 1.0 : 0.0, 1.0); }\n");
+        G.glUseProgram(prog);
+        int cmds = G.glCreateBuffers();
+        G.glBindBuffer(G.DRAW_INDIRECT_BUFFER, cmds);
+        ByteBuffer c = BufferUtils.createByteBuffer(48);
+        for (int k = 0; k < 3; k++) c.putInt(4).putInt(1).putInt(k * 4).putInt(k);
+        c.flip();
+        G.glBufferData(G.DRAW_INDIRECT_BUFFER, 48, 0x88E4);
+        G.glBufferSubData(G.DRAW_INDIRECT_BUFFER, 0, c);
+        GL11.glClear(GL11.GL_COLOR_BUFFER_BIT);
+        G.glMultiDrawArraysIndirect(GL11.GL_TRIANGLE_STRIP, 0, 3, 16);
+        check("two per-draw attributes on the instanced path -> red, green, blue thirds",
+            pixelAt(1, 4, 255, 0, 0) && pixelAt(4, 4, 0, 255, 0) && pixelAt(6, 4, 0, 0, 255));
+        G.glBindVertexArray(0);
+        G.glUseProgram(0);
+    }
+
+    static void perDrawCheck(String what, ByteBuffer values, int type, boolean normalized, boolean integer, String in, String decode,
+            boolean indexed, int lastInstances) {
+        float[] quads = new float[3 * 8];
+        for (int k = 0; k < 3; k++) {
+            float x0 = -1 + k * 2 / 3f, x1 = -1 + (k + 1) * 2 / 3f;
+            System.arraycopy(new float[] {x0, -1, x1, -1, x0, 1, x1, 1}, 0, quads, k * 8, 8);
+        }
+        int vbo = G.glCreateBuffers();
+        G.glBindBuffer(G.ARRAY_BUFFER, vbo);
+        G.glBufferData(G.ARRAY_BUFFER, BufferUtils.createFloatBuffer(24).put(quads).flip(), 0x88E4);
+        int data = G.glCreateBuffers();
+        G.glBindBuffer(G.ARRAY_BUFFER, data);
+        G.glBufferData(G.ARRAY_BUFFER, values.remaining(), 0x88E4);
+        G.glBufferSubData(G.ARRAY_BUFFER, 0, values);
+        int vao = G.glGenVertexArrays();
+        G.glBindVertexArray(vao);
+        G.glVertexAttribFormat(0, 2, GL11.GL_FLOAT, false, 0);
+        G.glVertexAttribBinding(0, 0);
+        G.glBindVertexBuffer(0, vbo, 0, 8);
+        G.glEnableVertexAttribArray(0);
+        if (integer) G.glVertexAttribIFormat(1, 1, type, 0);
+        else G.glVertexAttribFormat(1, 1, type, normalized, 0);
+        G.glVertexAttribBinding(1, 1);
+        G.glBindVertexBuffer(1, data, 0, 0);
+        G.glVertexBindingDivisor(1, 1 << 30);
+        G.glEnableVertexAttribArray(1);
+        int prog = program("#version 330\nlayout(location = 0) in vec2 aPos;\nlayout(location = 1) " + in + ";\nflat out int vColor;\n"
+                + "void main() { vColor = " + decode + "; gl_Position = vec4(aPos, 0.0, 1.0); }\n",
+            "#version 330\nflat in int vColor;\nout vec4 fragColor;\n"
+                + "void main() { fragColor = vec4(vColor == 0 ? 1.0 : 0.0, vColor == 1 ? 1.0 : 0.0, vColor == 2 ? 1.0 : 0.0, 1.0); }\n");
+        G.glUseProgram(prog);
+        int cmds = G.glCreateBuffers();
+        G.glBindBuffer(G.DRAW_INDIRECT_BUFFER, cmds);
+        ByteBuffer c = BufferUtils.createByteBuffer(60);
+        for (int k = 0; k < 3; k++) {
+            // The last command may draw its quad twice, over itself: the same pixels, but the instanced path.
+            int instances = k == 2 ? lastInstances : 1;
+            if (indexed) c.putInt(6).putInt(instances).putInt(0).putInt(k * 4).putInt(k);
+            else c.putInt(4).putInt(instances).putInt(k * 4).putInt(k);
+        }
+        c.flip();
+        G.glBufferData(G.DRAW_INDIRECT_BUFFER, 60, 0x88E4);
+        G.glBufferSubData(G.DRAW_INDIRECT_BUFFER, 0, c);
+        if (indexed) {
+            int ebo = G.glCreateBuffers();
+            G.glBindBuffer(G.ELEMENT_ARRAY_BUFFER, ebo);
+            G.glBufferData(G.ELEMENT_ARRAY_BUFFER, BufferUtils.createShortBuffer(6).put(new short[] {0, 1, 2, 2, 1, 3}).flip(), 0x88E4);
+        }
+        GL11.glClearColor(0, 0, 0, 1);
+        GL11.glClear(GL11.GL_COLOR_BUFFER_BIT);
+        if (indexed) G.glMultiDrawElementsIndirect(GL11.GL_TRIANGLES, GL11.GL_UNSIGNED_SHORT, 0, 3, 20);
+        else G.glMultiDrawArraysIndirect(GL11.GL_TRIANGLE_STRIP, 0, 3, 16);
+        check("per-draw data, " + what + " -> red, green, blue thirds",
+            pixelAt(1, 4, 255, 0, 0) && pixelAt(4, 4, 0, 255, 0) && pixelAt(6, 4, 0, 0, 255));
+        float[] current = new float[4];
+        org.lwjgl.opengl.GL20.glGetVertexAttribfv(1, org.lwjgl.opengl.GL20.GL_CURRENT_VERTEX_ATTRIB, current);
+        check("per-draw data, " + what + ": the instance array is back on, its current value (0, 0, 0, 1)",
+            org.lwjgl.opengl.GL20.glGetVertexAttribi(1, org.lwjgl.opengl.GL20.GL_VERTEX_ATTRIB_ARRAY_ENABLED) == 1
+                && current[0] == 0 && current[1] == 0 && current[2] == 0 && current[3] == 1);
+        // And the array still feeds a plain instanced draw at base instance 1: green everywhere.
+        G.glDrawArraysInstancedBaseInstance(GL11.GL_TRIANGLE_STRIP, 0, 4, 1, 1);
+        check("per-draw data, " + what + ": an instanced draw after it reads the array", pixelAt(1, 4, 0, 255, 0));
+        G.glBindVertexArray(0);
+        G.glUseProgram(0);
+    }
+
     /** A range of a buffer mapped and written: the buffer texture made from it shows the write. */
     static void mapCheck(int vao) {
         int buf = G.glCreateBuffers();
@@ -706,6 +855,311 @@ public class SmokeTest {
         GL11.glGetError();
         G.glBufferSubData(G.T_BUFFER, 0, BufferUtils.createFloatBuffer(4).put(new float[] {1, 2, 3, 4}).flip());
         check("a range past the end maps nothing and the buffer can still be written", none == null && GL11.glGetError() == 0);
+    }
+
+    /**
+     * A ring Viewpoint streams into through GL_COPY_WRITE_BUFFER (FrameStream) is marked not
+     * serialized; writes through it still land where they should, one after another.
+     */
+    static void streamCheck() {
+        int buf = G.glCreateBuffers();
+        G.glNamedBufferStorage(buf, 1024, 0x100);
+        G.glBindBuffer(Streams.COPY_WRITE_BUFFER, buf);
+        for (int i = 0; i < 4; i++) {
+            G.glBufferSubData(Streams.COPY_WRITE_BUFFER, i * 16L, BufferUtils.createFloatBuffer(4).put(new float[] {i, i + 1, i + 2, i + 3}).flip());
+        }
+        GL11.glFinish();
+        // Read from GL itself (glGetBufferSubData asks GL), which sends what StreamWrites held first.
+        ByteBuffer out = BufferUtils.createByteBuffer(64);
+        G.glGetBufferSubData(Streams.COPY_WRITE_BUFFER, 0, out);
+        G.glBindBuffer(Streams.COPY_WRITE_BUFFER, 0);
+        FloatBuffer f = out.asFloatBuffer();
+        boolean ok = GL11.glGetError() == 0;
+        for (int i = 0; i < 4; i++) for (int k = 0; k < 4; k++) ok &= f.get(i * 4 + k) == i + k;
+        check("writes into a stream buffer (not serialized) land in order", ok);
+    }
+
+    /**
+     * Writes into a stream wait in the CPU copy until something reads the buffer on the GPU
+     * (StreamWrites): how their ranges merge, that each kind of reader gets them first, and that
+     * per-draw constants don't need them sent at all.
+     */
+    static void streamWritesChecks() {
+        StreamWrites.Ranges r = new StreamWrites.Ranges();
+        StreamWrites.add(r, 0, 16);
+        StreamWrites.add(r, 16, 32);
+        boolean adjacent = r.n == 1 && r.from[0] == 0 && r.to[0] == 32;
+        StreamWrites.add(r, 64, 80);
+        StreamWrites.add(r, 40, 48);
+        boolean sorted = r.n == 3 && r.from[1] == 40 && r.from[2] == 64;
+        StreamWrites.add(r, 30, 66);
+        check("held ranges: adjacent ones join, apart ones stay sorted, one across them all folds them",
+            adjacent && sorted && r.n == 1 && r.from[0] == 0 && r.to[0] == 80);
+        StreamWrites.Ranges close = new StreamWrites.Ranges(), far = new StreamWrites.Ranges();
+        boolean fits = true;
+        for (int k = 0; k <= StreamWrites.MOST_RANGES; k++) fits &= StreamWrites.add(close, k * 1000L, k * 1000L + 10);
+        for (int k = 0; k < StreamWrites.MOST_RANGES; k++) StreamWrites.add(far, k * 100_000L, k * 100_000L + 10);
+        boolean farFits = StreamWrites.add(far, StreamWrites.MOST_RANGES * 100_000L, StreamWrites.MOST_RANGES * 100_000L + 10);
+        check("held ranges: past " + StreamWrites.MOST_RANGES + " the closest join if near, else they all go to GL",
+            fits && close.n == StreamWrites.MOST_RANGES && !farFits);
+
+        // Three thirds, each coloured by a per-draw value read from a stream buffer.
+        float[] quads = new float[3 * 8];
+        for (int k = 0; k < 3; k++) {
+            float x0 = -1 + k * 2 / 3f, x1 = -1 + (k + 1) * 2 / 3f;
+            System.arraycopy(new float[] {x0, -1, x1, -1, x0, 1, x1, 1}, 0, quads, k * 8, 8);
+        }
+        int vbo = G.glCreateBuffers();
+        G.glBindBuffer(G.ARRAY_BUFFER, vbo);
+        G.glBufferData(G.ARRAY_BUFFER, BufferUtils.createFloatBuffer(24).put(quads).flip(), 0x88E4);
+        int stream = G.glCreateBuffers();
+        G.glNamedBufferStorage(stream, 64, 0x100);
+        int vao = G.glGenVertexArrays();
+        G.glBindVertexArray(vao);
+        G.glVertexAttribFormat(0, 2, GL11.GL_FLOAT, false, 0);
+        G.glVertexAttribBinding(0, 0);
+        G.glBindVertexBuffer(0, vbo, 0, 8);
+        G.glEnableVertexAttribArray(0);
+        G.glVertexAttribFormat(1, 1, GL11.GL_FLOAT, false, 0);
+        G.glVertexAttribBinding(1, 1);
+        G.glBindVertexBuffer(1, stream, 0, 4);
+        G.glVertexBindingDivisor(1, 1 << 30);
+        G.glEnableVertexAttribArray(1);
+        int prog = program("#version 330\nlayout(location = 0) in vec2 aPos;\nlayout(location = 1) in float aColor;\nflat out int vColor;\n"
+                + "void main() { vColor = int(aColor + 0.5); gl_Position = vec4(aPos, 0.0, 1.0); }\n",
+            "#version 330\nflat in int vColor;\nout vec4 fragColor;\n"
+                + "void main() { fragColor = vec4(vColor == 0 ? 1.0 : 0.0, vColor == 1 ? 1.0 : 0.0, vColor == 2 ? 1.0 : 0.0, 1.0); }\n");
+        G.glUseProgram(prog);
+        int cmds = G.glCreateBuffers();
+        G.glBindBuffer(G.DRAW_INDIRECT_BUFFER, cmds);
+        ByteBuffer c = BufferUtils.createByteBuffer(48);
+        for (int k = 0; k < 3; k++) c.putInt(4).putInt(1).putInt(k * 4).putInt(k);
+        c.flip();
+        G.glBufferData(G.DRAW_INDIRECT_BUFFER, 48, 0x88E4);
+        G.glBufferSubData(G.DRAW_INDIRECT_BUFFER, 0, c);
+
+        G.glBindBuffer(Streams.COPY_WRITE_BUFFER, stream);
+        G.glBufferSubData(Streams.COPY_WRITE_BUFFER, 0, BufferUtils.createFloatBuffer(3).put(new float[] {0, 1, 2}).flip());
+        long sent = Stats.writesSent;
+        boolean held = StreamWrites.held(stream).length == 2;
+        GL11.glClear(GL11.GL_COLOR_BUFFER_BIT);
+        G.glMultiDrawArraysIndirect(GL11.GL_TRIANGLE_STRIP, 0, 3, 16);
+        boolean constants = pixelAt(1, 4, 255, 0, 0) && pixelAt(4, 4, 0, 255, 0) && pixelAt(6, 4, 0, 0, 255);
+        check("a write into a stream waits, and an indirect list on per-draw constants reads it without sending it",
+            held && constants && Stats.writesSent == sent && StreamWrites.held(stream).length == 2);
+
+        // An instanced draw reads the array from GL: what is held goes first. Base 2 -> blue.
+        G.glDrawArraysInstancedBaseInstance(GL11.GL_TRIANGLE_STRIP, 0, 4, 1, 2);
+        check("an instanced draw sends what is held before it reads the stream",
+            pixelAt(1, 4, 0, 0, 255) && StreamWrites.held(stream).length == 0 && Stats.writesSent == sent + 1);
+
+        G.glBufferSubData(Streams.COPY_WRITE_BUFFER, 4, BufferUtils.createFloatBuffer(1).put(new float[] {7}).flip());
+        ByteBuffer mapped = G.glMapBufferRange(Streams.COPY_WRITE_BUFFER, 0, 12, 1);
+        boolean mapSees = mapped != null && mapped.getFloat(4) == 7;
+        G.glUnmapBuffer(Streams.COPY_WRITE_BUFFER);
+        check("mapping a stream sends what is held first", mapSees && StreamWrites.held(stream).length == 0);
+
+        // A buffer texture made from the stream copies its rows from the CPU copy.
+        G.glBufferSubData(Streams.COPY_WRITE_BUFFER, 0, BufferUtils.createFloatBuffer(4).put(new float[] {0, 0, 1, 1}).flip());
+        G.glBindBuffer(Streams.COPY_WRITE_BUFFER, 0);
+        int btex = G.glCreateTextures(G.T_BUFFER);
+        G.glActiveTexture(G.TEXTURE0 + 122);
+        G.glBindTexture(G.T_BUFFER, btex);
+        G.glTexBuffer(G.T_BUFFER, 0x8814, stream);
+        int texProg = program("#version 330\nlayout(location = 0) in vec2 aPos;\nvoid main() { gl_Position = vec4(aPos, 0.0, 1.0); }\n",
+            "#version 330\nuniform samplerBuffer uS;\nout vec4 fragColor;\nvoid main() { fragColor = texelFetch(uS, 0); }\n");
+        G.glUseProgram(texProg);
+        G.glUniform1i(G.glGetUniformLocation(texProg, "uS"), 122);
+        // A vertex array that doesn't read the stream, so only the buffer texture can send it.
+        int plain = G.glGenVertexArrays();
+        G.glBindVertexArray(plain);
+        G.glVertexAttribFormat(0, 2, GL11.GL_FLOAT, false, 0);
+        G.glVertexAttribBinding(0, 0);
+        G.glBindVertexBuffer(0, vbo, 0, 8);
+        G.glEnableVertexAttribArray(0);
+        GL11.glClear(GL11.GL_COLOR_BUFFER_BIT);
+        long before = Stats.writesSent;
+        G.glDrawArrays(GL11.GL_TRIANGLE_STRIP, 0, 4);
+        check("a buffer texture made from a stream reads what is held from the CPU copy, without sending it",
+            pixelAt(1, 4, 0, 0, 255) && Stats.writesSent == before && StreamWrites.held(stream).length == 2);
+
+        // hold-writes:0 sends what is held, and then every write, at once.
+        StreamWrites.flushAll();
+        StreamWrites.on = false;
+        G.glBindBuffer(Streams.COPY_WRITE_BUFFER, stream);
+        G.glBufferSubData(Streams.COPY_WRITE_BUFFER, 0, BufferUtils.createFloatBuffer(1).put(new float[] {1}).flip());
+        check("with holding off, a write into a stream goes straight to GL", StreamWrites.held(stream).length == 0);
+        StreamWrites.on = true;
+        G.glBindBuffer(Streams.COPY_WRITE_BUFFER, 0);
+        G.glBindVertexArray(0);
+        G.glUseProgram(0);
+    }
+
+    /** A program of 17 samplers: {@code first} (cheap by name, so packed first) shown, 16 more on units from {@code base}. */
+    static int seventeen(String first, String others, int base, int firstTexture) {
+        StringBuilder fs = new StringBuilder("#version 330\nuniform sampler2D " + first + ";\n");
+        for (int i = 0; i < 16; i++) fs.append("uniform sampler2D ").append(others).append(i).append(";\n");
+        fs.append("out vec4 fragColor;\nvoid main() { float r = 0.0;\n");
+        for (int i = 0; i < 16; i++) fs.append("  r += texture(").append(others).append(i).append(", vec2(0.5)).r;\n");
+        fs.append("  fragColor = vec4(texture(").append(first).append(", vec2(0.5)).rgb + r, 1.0); }\n");
+        int prog = program("#version 330\nlayout(location = 0) in vec2 aPos;\nvoid main() { gl_Position = vec4(aPos, 0.0, 1.0); }\n", fs.toString());
+        G.glUseProgram(prog);
+        G.glActiveTexture(G.TEXTURE0 + base);
+        G.glBindTexture(G.T_2D, firstTexture);
+        G.glUniform1i(G.glGetUniformLocation(prog, first), base);
+        for (int i = 0; i < 16; i++) {
+            int t = G.glCreateTextures(G.T_2D);
+            G.glTextureStorage2D(t, 1, 0x8058, 1, 1);
+            G.glTextureSubImage2D(t, 0, 0, 0, 1, 1, GL11.GL_RGBA, GL11.GL_UNSIGNED_BYTE, BufferUtils.createByteBuffer(4));
+            G.glActiveTexture(G.TEXTURE0 + base + 1 + i);
+            G.glBindTexture(G.T_2D, t);
+            G.glUniform1i(G.glGetUniformLocation(prog, others + i), base + 1 + i);
+        }
+        return prog;
+    }
+
+    static int color(int r, int g, int b) {
+        int t = G.glCreateTextures(G.T_2D);
+        G.glTextureStorage2D(t, 1, 0x8058, 1, 1);
+        G.glTextureSubImage2D(t, 0, 0, 0, 1, 1, GL11.GL_RGBA, GL11.GL_UNSIGNED_BYTE,
+            BufferUtils.createByteBuffer(4).put(new byte[] {(byte) r, (byte) g, (byte) b, (byte) 255}).flip());
+        return t;
+    }
+
+    /** One texture packed by two programs: one place, one copy when it changes, both read the new texel. */
+    static void sharedAtlasCheck(int vao) {
+        int shared = color(0, 200, 0);
+        int a = seventeen("uSkyShared", "uA", 40, shared), b = seventeen("uSkyShared", "uB", 60, shared);
+        G.glBindVertexArray(vao);
+        G.glUseProgram(a);
+        G.glDrawArrays(GL11.GL_TRIANGLE_STRIP, 0, 4);
+        G.glUseProgram(b);
+        G.glDrawArrays(GL11.GL_TRIANGLE_STRIP, 0, 4);
+        G.glTextureSubImage2D(shared, 0, 0, 0, 1, 1, GL11.GL_RGBA, GL11.GL_UNSIGNED_BYTE,
+            BufferUtils.createByteBuffer(4).put(new byte[] {0, 0, (byte) 200, (byte) 255}).flip());
+        long copies = Stats.atlasCopies;
+        G.glUseProgram(a);
+        G.glDrawArrays(GL11.GL_TRIANGLE_STRIP, 0, 4);
+        boolean readA = pixel(0, 0, 200);
+        G.glUseProgram(b);
+        G.glDrawArrays(GL11.GL_TRIANGLE_STRIP, 0, 4);
+        boolean readB = pixel(0, 0, 200);
+        check("atlas: a texture two programs pack is copied once when it changes (" + (Stats.atlasCopies - copies) + "), both read it",
+            Stats.atlasCopies - copies == 1 && readA && readB);
+        G.glUseProgram(0);
+    }
+
+    /** A float texture keeps its precision in the full-float sheet; an 8-bit one goes in the half-float sheet. */
+    static void atlasPrecisionCheck(int vao) {
+        int precise = G.glCreateTextures(G.T_2D);
+        G.glTextureStorage2D(precise, 1, 0x8814, 1, 1); // RGBA32F
+        G.glTextureSubImage2D(precise, 0, 0, 0, 1, 1, GL11.GL_RGBA, GL11.GL_FLOAT, BufferUtils.createFloatBuffer(4).put(new float[] {1.0001f, 0, 0, 1}).flip());
+        // (v - 1) * 1000: 0.1 when the 1.0001 survives, 0 when a half float rounded it to 1.
+        StringBuilder fs = new StringBuilder("#version 330\nuniform sampler2D uSkyPrecise;\n");
+        for (int i = 0; i < 16; i++) fs.append("uniform sampler2D uP").append(i).append(";\n");
+        fs.append("out vec4 fragColor;\nvoid main() { float r = 0.0;\n");
+        for (int i = 0; i < 16; i++) fs.append("  r += texture(uP").append(i).append(", vec2(0.5)).r;\n");
+        fs.append("  fragColor = vec4((texelFetch(uSkyPrecise, ivec2(0), 0).r - 1.0) * 1000.0 + r, 0.0, 0.0, 1.0); }\n");
+        int prog = program("#version 330\nlayout(location = 0) in vec2 aPos;\nvoid main() { gl_Position = vec4(aPos, 0.0, 1.0); }\n", fs.toString());
+        G.glUseProgram(prog);
+        G.glActiveTexture(G.TEXTURE0 + 80);
+        G.glBindTexture(G.T_2D, precise);
+        G.glUniform1i(G.glGetUniformLocation(prog, "uSkyPrecise"), 80);
+        int eight = 0;
+        for (int i = 0; i < 16; i++) {
+            int t = color(0, 0, 0);
+            if (i == 0) eight = t;
+            G.glActiveTexture(G.TEXTURE0 + 81 + i);
+            G.glBindTexture(G.T_2D, t);
+            G.glUniform1i(G.glGetUniformLocation(prog, "uP" + i), 81 + i);
+        }
+        G.glBindVertexArray(vao);
+        G.glDrawArrays(GL11.GL_TRIANGLE_STRIP, 0, 4);
+        boolean kept = pixel(26, 0, 0);
+        check("atlas: a float texture keeps its precision (1.0001 reads back past 1.0) in the full-float sheet, an 8-bit one goes in the half-float one",
+            kept && "full".equals(Atlas.sheetOf(precise)) && "half".equals(Atlas.sheetOf(eight)));
+        G.glUseProgram(0);
+    }
+
+    /** A texture taller than the sheet so far: the sheet grows, and the texture still reads right. */
+    static void atlasGrowthCheck(int vao) {
+        int big = G.glCreateTextures(G.T_2D);
+        G.glTextureStorage2D(big, 1, 0x8058, 4096, 1500);
+        ByteBuffer row = BufferUtils.createByteBuffer(4096 * 4);
+        for (int i = 0; i < 4096; i++) row.put(i * 4 + 1, (byte) 180).put(i * 4 + 3, (byte) 255);
+        for (int y = 0; y < 1500; y++) G.glTextureSubImage2D(big, 0, 0, y, 4096, 1, GL11.GL_RGBA, GL11.GL_UNSIGNED_BYTE, row);
+        int prog = seventeen("uSkyTall", "uG", 100, big);
+        G.glBindVertexArray(vao);
+        G.glDrawArrays(GL11.GL_TRIANGLE_STRIP, 0, 4);
+        check("atlas: a 4096x1500 texture grows the sheet and reads back", pixel(0, 180, 0) && "half".equals(Atlas.sheetOf(big)));
+        G.glUseProgram(0);
+    }
+
+    /**
+     * A model program that fits with one atlas sheet but not two (8 model textures, 7 arrays, 2
+     * packable textures): it reads its packed textures from the full-float sheet and keeps all its
+     * model textures.
+     */
+    /** Short of one unit for both sheets: reads its two packed textures, one and two, from the full-float sheet. */
+    static int fullOnlyProgram(int one, int two) {
+        StringBuilder fs = new StringBuilder("#version 330\n#define MODEL_TEXTURES 16\nuniform sampler2D uTextures[MODEL_TEXTURES];\nuniform int uSlot;\n"
+            + "uniform sampler2D uSkyOne;\nuniform sampler2D uSkyTwo;\n");
+        for (int i = 0; i < 7; i++) fs.append("uniform sampler2DArray uLayer").append(i).append(";\n");
+        fs.append("out vec4 fragColor;\nvoid main() { vec4 c = texture(uTextures[uSlot], vec2(0.5)) * 0.0;\n");
+        for (int i = 0; i < 7; i++) fs.append("  c += texture(uLayer").append(i).append(", vec3(0.5, 0.5, 0.0)) * 0.0;\n");
+        fs.append("  fragColor = vec4(texture(uSkyOne, vec2(0.5)).rgb + texture(uSkyTwo, vec2(0.5)).rgb, 1.0) + c; }\n");
+        int prog = program("#version 330\nlayout(location = 0) in vec2 aPos;\nvoid main() { gl_Position = vec4(aPos, 0.0, 1.0); }\n", fs.toString());
+        G.glUseProgram(prog);
+        G.glActiveTexture(G.TEXTURE0 + 120);
+        G.glBindTexture(G.T_2D, one);
+        G.glUniform1i(G.glGetUniformLocation(prog, "uSkyOne"), 120);
+        G.glActiveTexture(G.TEXTURE0 + 121);
+        G.glBindTexture(G.T_2D, two);
+        G.glUniform1i(G.glGetUniformLocation(prog, "uSkyTwo"), 121);
+        return prog;
+    }
+
+    static void fullOnlyCheck(int vao) {
+        int before = ModelSlots.count;
+        int one = color(0, 150, 0), two = color(0, 0, 90);
+        int prog = fullOnlyProgram(one, two);
+        Prog.Program p = Prog.programs.get(prog);
+        G.glBindVertexArray(vao);
+        G.glDrawArrays(GL11.GL_TRIANGLE_STRIP, 0, 4);
+        String sheet = Atlas.sheetOf(one);
+        check("a program short of one unit reads its packed textures from the full-float sheet and keeps " + ModelSlots.count + " model textures",
+            p != null && p.linked && p.atlasFullOnly && ModelSlots.count == before && pixel(0, 150, 90) && "full".equals(sheet));
+        G.glUseProgram(0);
+    }
+
+    /**
+     * A texture a two-sheet program packs, then a program that reads only the full-float sheet:
+     * it moves to the full-float sheet and lives there only, both programs read it, and a change
+     * to it is copied once.
+     */
+    static void oneSheetCheck(int vao) {
+        int shared = color(0, 120, 0), black = color(0, 0, 0);
+        int both = seventeen("uSkyShared", "uC", 80, shared);
+        G.glBindVertexArray(vao);
+        G.glUseProgram(both);
+        G.glDrawArrays(GL11.GL_TRIANGLE_STRIP, 0, 4);
+        boolean first = pixel(0, 120, 0) && "half".equals(Atlas.sheetOf(shared));
+        int fullOnly = fullOnlyProgram(shared, black);
+        G.glDrawArrays(GL11.GL_TRIANGLE_STRIP, 0, 4);
+        boolean moved = pixel(0, 120, 0) && "full".equals(Atlas.sheetOf(shared));
+        G.glTextureSubImage2D(shared, 0, 0, 0, 1, 1, GL11.GL_RGBA, GL11.GL_UNSIGNED_BYTE,
+            BufferUtils.createByteBuffer(4).put(new byte[] {0, 0, (byte) 120, (byte) 255}).flip());
+        long copies = Stats.atlasCopies;
+        G.glUseProgram(both);
+        G.glDrawArrays(GL11.GL_TRIANGLE_STRIP, 0, 4);
+        boolean readBoth = pixel(0, 0, 120);
+        G.glUseProgram(fullOnly);
+        G.glDrawArrays(GL11.GL_TRIANGLE_STRIP, 0, 4);
+        boolean readFull = pixel(0, 0, 120);
+        check("atlas: a texture a full-float-only program also reads moves to that sheet only (" + first + ", " + moved
+                + "), both programs read it, a change is copied once (" + (Stats.atlasCopies - copies) + ")",
+            first && moved && readBoth && readFull && Stats.atlasCopies - copies == 1 && "full".equals(Atlas.sheetOf(shared)));
+        G.glUseProgram(0);
     }
 
     static boolean pixelAt(int x, int y, int r, int g, int b) {

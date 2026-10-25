@@ -122,6 +122,18 @@ final class HotReload {
                 Log.warn("could not revive Viewpoint: " + e);
             }
         }
+        // "patch-game-draws": the running game's sprite draws go through GameDraws (counted, state on request).
+        Path gameDraws = Log.dir().resolve("patch-game-draws");
+        if (Files.exists(gameDraws)) {
+            try {
+                Files.delete(gameDraws);
+                java.lang.reflect.Field g = Class.forName("me.zed_0xff.zombie_buddy.Loader").getDeclaredField("g_instrumentation");
+                g.setAccessible(true);
+                GameDrawsPatch.install((Instrumentation) g.get(null));
+            } catch (Throwable e) {
+                Log.warn("could not watch the game's draws: " + e);
+            }
+        }
         // "patch-slots": the running game gets SlotPatch, which a fresh start installs in Main.
         Path slots = Log.dir().resolve("patch-slots");
         if (Files.exists(slots)) {

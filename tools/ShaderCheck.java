@@ -108,21 +108,23 @@ public class ShaderCheck {
                     List<String> pack = new ArrayList<>();
                     Glsl.Result v = translated.get(vert), fr = translated.get(name);
                     int kept = Glsl.MODEL_TEXTURES;
+                    boolean fullOnly = false;
                     for (int attempt = 0; attempt < 16 && log != null; attempt++) {
                         Matcher m = OVER_LIMIT.matcher(log);
                         if (!m.find()) break;
-                        int more = Integer.parseInt(m.group(1)) - 16 + (pack.isEmpty() ? 1 : 0);
+                        int more = Integer.parseInt(m.group(1)) - 16 + (pack.isEmpty() ? 2 : 0);
                         List<String> candidates = new ArrayList<>(fr.packable);
                         for (String n : v.packable) if (!candidates.contains(n)) candidates.add(n);
                         candidates.removeAll(pack);
                         if (candidates.isEmpty()) {
-                            // As Prog.link: nothing left for the atlas, so fewer model textures.
-                            if (v.modelTextures == 0 && fr.modelTextures == 0 || kept <= Glsl.MIN_MODEL_TEXTURES) break;
-                            kept--;
+                            // As Prog.link: nothing left for the atlas, so one sheet, then fewer model textures.
+                            if (!fullOnly && !pack.isEmpty()) fullOnly = true;
+                            else if (v.modelTextures == 0 && fr.modelTextures == 0 || kept <= Glsl.MIN_MODEL_TEXTURES) break;
+                            else kept--;
                         }
                         for (int i = 0; i < candidates.size() && more > 0; i++, more--) pack.add(candidates.get(i));
-                        v = Glsl.translate(sources.get(vert), true, pack, kept);
-                        fr = Glsl.translate(sources.get(name), false, pack, kept);
+                        v = Glsl.translate(sources.get(vert), true, pack, kept, fullOnly);
+                        fr = Glsl.translate(sources.get(name), false, pack, kept, fullOnly);
                         log = link(v, fr);
                         if (System.getProperty("verbose") != null) {
                             System.out.println("   " + name + " packs " + pack + " (vertex " + v.packed + ", fragment " + fr.packed + "): "
@@ -133,6 +135,7 @@ public class ShaderCheck {
                         linkedWith = vert;
                         packed = pack.size();
                         if (kept < Glsl.MODEL_TEXTURES) System.out.println("    " + name + " keeps " + kept + " model textures");
+                        if (fullOnly) System.out.println("    " + name + " reads its atlas textures from the full-float sheet only");
                         break;
                     }
                     firstLog = vert + ": " + log;

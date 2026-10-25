@@ -41,7 +41,9 @@ case "$1" in
     rm -rf "$SAVES/$TEST" && cp -R "$OUT/pristine" "$SAVES/$TEST"
     cp "$ZOMBOID/latestSave.ini" "$OUT/latestSave.ini.player"
     touch "$OUT/started"
-    (cd "$APP/Java" && "$APP/MacOS/JavaAppLauncher" "-javaagent:ZombieBuddy.jar=experimental,lua_server_port=$PORT" -- >"$OUT/stdout.log" 2>&1 &)
+    # In a session of its own: stopping this script (or whatever ran it) must never take the game with it.
+    (cd "$APP/Java" && /usr/bin/python3 -c 'import os, sys; os.setsid(); os.execv(sys.argv[1], sys.argv[1:])' \
+      "$APP/MacOS/JavaAppLauncher" "-javaagent:ZombieBuddy.jar=experimental,lua_server_port=$PORT" -- >"$OUT/stdout.log" 2>&1 &)
     sleep 2
     pid=$(pgrep -x JavaAppLauncher)
     if [[ -n "$pid" ]]; then
@@ -83,6 +85,10 @@ case "$1" in
     fi
     sleep 12
     [[ "$(lua 'return getPlayer() ~= nil')" == *true* ]] && echo "in game" || { echo "loaded, but no player"; exit 1; }
+    # ZombieBuddy's experimental log overlay (on because the Lua server needs "experimental") draws
+    # every log line letter by letter: ~35,000 draws a frame with Viewpoint's slow-frame lines,
+    # which halves the frame rate. A normal launch from Steam doesn't have it.
+    echo "log overlay off: $(lua 'ZombieBuddy.LogOverlay.disable(); return tostring(not ZombieBuddy.LogOverlay.isEnabled())')"
     ;;
   lua) lua "$2"; echo ;;
   view) lua "Viewpoint.View.cycle(); return 'cycled'"; echo ;;
