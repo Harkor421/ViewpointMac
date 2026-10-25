@@ -1,0 +1,10 @@
+name=Viewpoint for Mac
+id=ViewpointMac
+description=Runs Project Viewpoint on a Mac: translates its OpenGL 3.3-4.5 shaders and calls to the OpenGL 2.1 the game gets on macOS. Does nothing on Windows or Linux.
+modversion=0.1.0
+versionMin=42.21
+require=\ZombieBuddy
+loadModBefore=Viewpoint
+ZBVersionMin=2.3.0
+javaJarFile=media/java/client/ViewpointMac.jar
+javaPkgName=vpmac

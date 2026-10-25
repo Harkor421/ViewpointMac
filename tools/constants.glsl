@@ -1,0 +1,78 @@
+#ifndef VIEWPOINT_CONSTANTS
+#define VIEWPOINT_CONSTANTS
+// Copy of Viewpoint's generated constants (Shaders.constants), for the offline check only.
+#define FLAG_SINGLE_SIDED 1
+#define FLAG_DECAL 2
+#define FLAG_SOLID_FLOOR 4
+#define FLAG_COVER 8
+#define FLAG_BAKED_FLOOR 64
+#define FLAG_BILLBOARD 128
+#define FLAG_FACING 512
+#define FLAG_GLASS 1024
+#define FLAG_WATER 2048
+#define FLAG_GRASS 4096
+#define FLAG_DOOR 16384
+#define FLAG_ROOF 32768
+#define FLAG_LIFTED 98304
+#define FLAG_SHADED_ART 163840
+#define ROOF_EAST_ART 0.5
+#define PLANE_SHIFT 16
+#define PLANE_MASK 7
+#define PLANE_BITS 3
+#define PLANT_VERTICES 6
+#define PLANT_TEXELS 7
+#define FLAG_LAYER_SHIFT 4
+#define FLAG_ROOTED 256
+#define FLAG_STANDING 8192
+#define MODEL_FLAGS 6
+#define MODEL_SQUARE 7
+#define MODEL_INDEX 8
+#define NO_SQUARE 64
+#define CARD_TEXELS 7
+#define MODEL_TEXTURES 16
+#define MODEL_SLOT_SHIFT 24
+#define ATLAS_SLOTS 8
+#define ATLAS_SLOT_SHIFT 24
+#define ROOT_X_SHIFT 16
+#define ROOT_Y_SHIFT 24
+#define WALL_FAMILY_SHIFT 16
+#define WALL_FAMILY_MASK 15
+#define SPOT_TEXELS 6
+#define SPOT_MAPS 5
+#define SPOT_TORCH 0
+#define SPOT_LOW_BEAM 1
+#define SPOT_REAR 2
+#define SQRT6 2.4494896
+#define SQUARES_A_METRE 0.81649655
+#define SHELL_BAND 256.0
+#define RELIEF_SPACING 4.0
+#define RELIEF_WATER_SPACING 4.0
+#define RELIEF_FLOW_SPACING 16.0
+#define RELIEF_FLOW_MOST 2.0
+#define RELIEF_WALL_EPS 0.015625
+#define RELIEF_KNEE 0.5
+#define LAMP_HEIGHT 2.1
+#define SUN_LEAST 0.02
+#define LIGHT_COLUMNS 204.0
+#define LIGHT_GRID vec2(20.0, 40.0)
+#define SKY_STEP 16.0
+#define BAND_WINDOW 72
+#define BAND_LEVELS 32
+#define CELL_WINDOW 16
+#define AIR_BOTTOM 6360.0
+#define AIR_TOP 6460.0
+#define AIR_GROUND 0.2
+#define AIR_GROUND_ALBEDO 0.3
+#define AIR_RAYLEIGH vec3(0.0058, 0.0135, 0.0331)
+#define AIR_RAYLEIGH_HEIGHT 8.0
+#define AIR_MIE_SCATTERING 0.15
+#define AIR_MIE_EXTINCTION 0.1667
+#define AIR_MIE_HEIGHT 1.2
+#define AIR_MIE_PEAK 0.15
+#define AIR_MIE_PEAK_G 0.97
+#define AIR_MIE_BROAD_G 0.5
+#define AIR_OZONE vec3(0.00065, 0.00188, 0.000085)
+#define AIR_OZONE_CENTRE 25.0
+#define AIR_OZONE_HALF 15.0
+#define AIR_SUN vec3(1.0, 1.0, 1.0)
+#endif
