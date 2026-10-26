@@ -141,6 +141,7 @@ public class SmokeTest {
         mapRangeCheck();
         streamCheck();
         streamWritesChecks();
+        meshTableChecks();
         sharedAtlasCheck(vao);
         atlasPrecisionCheck(vao);
         atlasGrowthCheck(vao);
@@ -877,6 +878,113 @@ public class SmokeTest {
         boolean ok = GL11.glGetError() == 0;
         for (int i = 0; i < 4; i++) for (int k = 0; k < 4; k++) ok &= f.get(i * 4 + k) == i + k;
         check("writes into a stream buffer (not serialized) land in order", ok);
+    }
+
+    /**
+     * Per-draw vec4 inputs read from the table (MeshRows): what the translation rewrites, and
+     * that a mesh-shaped list draws the same through the table as through the attributes, while
+     * other draws, two-instance lists and the switch off keep the attributes.
+     */
+    static void meshTableChecks() {
+        Glsl.Result t = Glsl.translate("#version 330\nlayout(location = 0) in vec2 aPos;\nlayout(location = 5) in vec4 aLow;\n"
+            + "layout(location = 6) in vec4 aMesh;\nlayout(location = 7) in int aDraw;\n"
+            + "void main() { gl_Position = vec4(aPos, aLow.x + aMesh.x, float(aDraw)); }\n", true);
+        check("translation: a vec4 input at 6 reads through the table, a vec4 below 6 and an int at 7 stay as they are",
+            Integer.valueOf(6).equals(t.locations.get(Glsl.TABLE_INPUT + "aMesh")) && Integer.valueOf(Glsl.RECORD_LOCATION).equals(t.locations.get(Glsl.RECORD))
+                && Integer.valueOf(5).equals(t.locations.get("aLow")) && Integer.valueOf(7).equals(t.locations.get("aDraw"))
+                && t.mergedBuffers.contains(Glsl.TABLE));
+
+        float[] quads = new float[3 * 8];
+        for (int k = 0; k < 3; k++) {
+            float x0 = -1 + k * 2 / 3f, x1 = -1 + (k + 1) * 2 / 3f;
+            System.arraycopy(new float[] {x0, -1, x1, -1, x0, 1, x1, 1}, 0, quads, k * 8, 8);
+        }
+        int vbo = G.glCreateBuffers();
+        G.glBindBuffer(G.ARRAY_BUFFER, vbo);
+        G.glBufferData(G.ARRAY_BUFFER, BufferUtils.createFloatBuffer(24).put(quads).flip(), 0x88E4);
+        // Records of 48 bytes (aMesh, aMeshFade, aMeshBelow), after one that must never be read:
+        // aMesh.x + aMeshFade.y + aMeshBelow.z is 0, 1 and 2 for records 0, 1 and 2. Record 3
+        // repeats 2, for the second instance of a two-instance command at base 2.
+        float[] records = {9, 0, 0, 0, 0, 9, 0, 0, 0, 0, 9, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0.25f, 0, 0, 0, 0, 0.25f, 0, 0, 0, 0, 0.5f, 0,
+            1, 0, 0, 0, 0, 0.5f, 0, 0, 0, 0, 0.5f, 0,
+            1, 0, 0, 0, 0, 0.5f, 0, 0, 0, 0, 0.5f, 0};
+        int stream = G.glCreateBuffers();
+        G.glNamedBufferStorage(stream, records.length * 4, 0x100);
+        G.glBindBuffer(Streams.COPY_WRITE_BUFFER, stream);
+        G.glBufferSubData(Streams.COPY_WRITE_BUFFER, 0, BufferUtils.createFloatBuffer(records.length).put(records).flip());
+        G.glBindBuffer(Streams.COPY_WRITE_BUFFER, 0);
+        int vao = G.glGenVertexArrays();
+        G.glBindVertexArray(vao);
+        G.glVertexAttribFormat(0, 2, GL11.GL_FLOAT, false, 0);
+        G.glVertexAttribBinding(0, 0);
+        G.glBindVertexBuffer(0, vbo, 0, 8);
+        G.glEnableVertexAttribArray(0);
+        for (int a = 6; a <= 8; a++) {
+            G.glVertexAttribFormat(a, 4, GL11.GL_FLOAT, false, (a - 6) * 16);
+            G.glVertexAttribBinding(a, 1);
+            G.glEnableVertexAttribArray(a);
+        }
+        G.glBindVertexBuffer(1, stream, 48, 48);
+        G.glVertexBindingDivisor(1, 1);
+        String fs = "#version 330\nflat in int vColor;\nout vec4 fragColor;\n"
+            + "void main() { fragColor = vec4(vColor == 0 ? 1.0 : 0.0, vColor == 1 ? 1.0 : 0.0, vColor == 2 ? 1.0 : 0.0, 1.0); }\n";
+        int prog = program("#version 330\nlayout(location = 0) in vec2 aPos;\nlayout(location = 6) in vec4 aMesh;\n"
+            + "layout(location = 7) in vec4 aMeshFade;\nlayout(location = 8) in vec4 aMeshBelow;\nflat out int vColor;\n"
+            + "void main() { vColor = int(aMesh.x + aMeshFade.y + aMeshBelow.z + 0.5); gl_Position = vec4(aPos, 0.0, 1.0); }\n", fs);
+        G.glUseProgram(prog);
+        int cmds = G.glCreateBuffers();
+        G.glBindBuffer(G.DRAW_INDIRECT_BUFFER, cmds);
+        G.glBufferData(G.DRAW_INDIRECT_BUFFER, 48, 0x88E4);
+        meshList(cmds, 1);
+
+        long records0 = Stats.tableRecords;
+        GL11.glClear(GL11.GL_COLOR_BUFFER_BIT);
+        G.glMultiDrawArraysIndirect(GL11.GL_TRIANGLE_STRIP, 0, 3, 16);
+        check("a mesh-shaped list reads its three per-draw vec4 from the table -> red, green, blue thirds (records " + (Stats.tableRecords - records0) + ")",
+            Stats.tableRecords - records0 == 3 && pixelAt(1, 4, 255, 0, 0) && pixelAt(4, 4, 0, 255, 0) && pixelAt(6, 4, 0, 0, 255));
+
+        // Another draw with the same program reads the attributes again (base 2 -> blue in the first third).
+        G.glDrawArraysInstancedBaseInstance(GL11.GL_TRIANGLE_STRIP, 0, 4, 1, 2);
+        check("a draw after a table list reads the attributes again", pixelAt(1, 4, 0, 0, 255));
+
+        meshList(cmds, 2);
+        records0 = Stats.tableRecords;
+        GL11.glClear(GL11.GL_COLOR_BUFFER_BIT);
+        G.glMultiDrawArraysIndirect(GL11.GL_TRIANGLE_STRIP, 0, 3, 16);
+        check("a list with a two-instance command keeps the attributes",
+            Stats.tableRecords == records0 && pixelAt(1, 4, 255, 0, 0) && pixelAt(4, 4, 0, 255, 0) && pixelAt(6, 4, 0, 0, 255));
+
+        meshList(cmds, 1);
+        MeshRows.on = false;
+        GL11.glClear(GL11.GL_COLOR_BUFFER_BIT);
+        G.glMultiDrawArraysIndirect(GL11.GL_TRIANGLE_STRIP, 0, 3, 16);
+        MeshRows.on = true;
+        check("with the table switched off, a mesh list reads the attributes",
+            Stats.tableRecords == records0 && pixelAt(1, 4, 255, 0, 0) && pixelAt(4, 4, 0, 255, 0) && pixelAt(6, 4, 0, 0, 255));
+
+        // A program that reads two of the three, as shadow.vert does: aMesh.x + aMeshFade.y is 0, 0.5 and 1.5.
+        int two = program("#version 330\nlayout(location = 0) in vec2 aPos;\nlayout(location = 6) in vec4 aMesh;\n"
+            + "layout(location = 7) in vec4 aMeshFade;\nflat out int vColor;\n"
+            + "void main() { vColor = int(aMesh.x + aMeshFade.y + 0.5); gl_Position = vec4(aPos, 0.0, 1.0); }\n", fs);
+        G.glUseProgram(two);
+        records0 = Stats.tableRecords;
+        GL11.glClear(GL11.GL_COLOR_BUFFER_BIT);
+        G.glMultiDrawArraysIndirect(GL11.GL_TRIANGLE_STRIP, 0, 3, 16);
+        check("a program reading two of the three from the table -> red, green, blue thirds",
+            Stats.tableRecords - records0 == 3 && pixelAt(1, 4, 255, 0, 0) && pixelAt(4, 4, 0, 255, 0) && pixelAt(6, 4, 0, 0, 255));
+        G.glBindVertexArray(0);
+        G.glUseProgram(0);
+    }
+
+    /** Three commands, one per third, at base instances 0, 1 and 2; the last with {@code lastInstances}. */
+    static void meshList(int cmds, int lastInstances) {
+        ByteBuffer c = BufferUtils.createByteBuffer(48);
+        for (int k = 0; k < 3; k++) c.putInt(4).putInt(k == 2 ? lastInstances : 1).putInt(k * 4).putInt(k);
+        c.flip();
+        G.glBindBuffer(G.DRAW_INDIRECT_BUFFER, cmds);
+        G.glBufferSubData(G.DRAW_INDIRECT_BUFFER, 0, c);
     }
 
     /**

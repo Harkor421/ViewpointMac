@@ -13,19 +13,19 @@ final class Stats {
     private Stats() {}
 
     static long draws, commands, binds, samplerChanges, vaoBinds, attribApplies, atlasCopies, atlasTexels,
-        bufferRows, readbacks, uniforms, writesHeld, writesSent;
+        bufferRows, readbacks, uniforms, writesHeld, writesSent, tableRecords;
 
     private static long[] start;
     private static long statsUntil, statsFrom, gpuUntil, gpuFrom, gpuSettled;
 
     private static long[] snapshot() {
         return new long[] {draws, commands, binds, samplerChanges, vaoBinds, attribApplies, atlasCopies, atlasTexels,
-            bufferRows, readbacks, uniforms, writesHeld, writesSent};
+            bufferRows, readbacks, uniforms, writesHeld, writesSent, tableRecords};
     }
 
     private static final String[] NAMES = {"draw calls", "draw commands", "texture binds", "sampler changes", "vertex array binds",
         "attribute updates", "atlas copies", "atlas texels", "buffer texture rows", "depth reads", "uniform sets",
-        "stream writes held", "stream writes sent to GL"};
+        "stream writes held", "stream writes sent to GL", "per-draw records read from the table"};
 
     static void startStats(int seconds) {
         start = snapshot();

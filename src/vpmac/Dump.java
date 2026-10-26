@@ -110,6 +110,10 @@ final class Dump {
                 else if (w.startsWith("cpu:")) CpuClock.start(Integer.parseInt(w.substring(4)));
                 else if (w.startsWith("spin:")) Spin.nanos = Long.parseLong(w.substring(5));
                 else if (w.equals("finalprog")) FinalProgram.on = true;
+                else if (w.startsWith("mesh-table:")) {
+                    MeshRows.on = w.endsWith("1");
+                    Log.info("per-draw data " + (MeshRows.on ? "read from the table where it can be" : "read from the attributes"));
+                }
                 else if (w.startsWith("hold-writes:")) {
                     StreamWrites.on = w.endsWith("1");
                     if (!StreamWrites.on) StreamWrites.flushAll();

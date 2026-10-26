@@ -90,6 +90,7 @@ final class Buf {
     static void forget(int buffer) {
         Streams.forget(buffer);
         StreamWrites.drop(buffer);
+        MeshRows.forget(buffer);
         Info i = infos.remove(buffer);
         if (i != null && i.data != null) MemoryUtil.memFree(i.data);
         bound.replaceAll((t, b) -> b == buffer ? 0 : b);

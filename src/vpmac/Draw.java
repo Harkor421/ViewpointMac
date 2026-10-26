@@ -240,26 +240,31 @@ final class Draw {
             return;
         }
         int indexBytes = type == GL11.GL_UNSIGNED_INT ? 4 : type == GL11.GL_UNSIGNED_SHORT ? 2 : 1;
+        // Indices are unknown here; a stand-in attribute 0, if one is needed, covers every
+        // 16-bit index past the furthest base vertex.
+        int most = 0;
+        boolean single = true;
+        for (int i = 0; i < drawCount; i++) {
+            long at = indirect + (long) i * stride;
+            if (at + 20 > cmds.size) break;
+            most = Math.max(most, Buf.intAt(cmds, at + 12));
+            single &= Buf.intAt(cmds, at + 4) <= 1;
+        }
+        // Before the units are set up: a list reading its per-draw data from the table needs it on its unit.
+        boolean table = single && MeshRows.prepare();
         if (!begin()) return;
         boolean constant = false;
         try {
-            // Indices are unknown here; a stand-in attribute 0, if one is needed, covers every
-            // 16-bit index past the furthest base vertex.
-            int most = 0;
-            boolean single = true;
-            for (int i = 0; i < drawCount; i++) {
-                long at = indirect + (long) i * stride;
-                if (at + 20 > cmds.size) break;
-                most = Math.max(most, Buf.intAt(cmds, at + 12));
-                single &= Buf.intAt(cmds, at + 4) <= 1;
-            }
             NoAttribs.before(most + (1 << 16));
             Vao.beginRun();
             shifted = 0;
-            // Single-instance commands draw plainly, their per-draw data set as constants (see PerDraw).
-            constant = single && PerDraw.begin();
-            // Per-instance data set as constants comes from the CPU copy, not from GL.
-            StreamWrites.beforeDraw(!constant);
+            // Single-instance commands draw plainly, their per-draw data from the table (MeshRows)
+            // or set as constants (PerDraw).
+            constant = !table && single && PerDraw.begin();
+            if (table) MeshRows.begin();
+            else MeshRows.plain();
+            // Per-instance data from the table or set as constants comes from the CPU copy, not from GL.
+            StreamWrites.beforeDraw(!constant && !table);
             int set = -1;
             for (int i = 0; i < drawCount; i++) {
                 long at = indirect + (long) i * stride;
@@ -267,7 +272,9 @@ final class Draw {
                 int count = Buf.intAt(cmds, at), instances = Buf.intAt(cmds, at + 4), first = Buf.intAt(cmds, at + 8),
                     baseVertex = Buf.intAt(cmds, at + 12), baseInstance = Buf.intAt(cmds, at + 16);
                 if (count <= 0 || instances <= 0) continue;
-                if (constant) {
+                if (table) {
+                    if (baseInstance != set) MeshRows.set(set = baseInstance);
+                } else if (constant) {
                     if (baseInstance != set) PerDraw.set(set = baseInstance);
                 } else if (baseInstance != shifted) {
                     Vao.shiftInstances(shifted = baseInstance);
@@ -277,6 +284,7 @@ final class Draw {
             }
         } finally {
             // Even when a command throws: put the instance arrays, the array buffer and attribute 0 back.
+            if (table) MeshRows.end();
             if (constant) PerDraw.end();
             if (shifted != 0) Vao.shiftInstances(0);
             shifted = 0;
@@ -292,25 +300,30 @@ final class Draw {
             Log.once("indirectMissing", "an indirect draw had no command buffer copy; skipped");
             return;
         }
+        int most = 0;
+        boolean single = true;
+        for (int i = 0; i < drawCount; i++) {
+            long at = indirect + (long) i * stride;
+            if (at + 16 > cmds.size) break;
+            most = Math.max(most, Buf.intAt(cmds, at + 8) + Buf.intAt(cmds, at));
+            single &= Buf.intAt(cmds, at + 4) <= 1;
+        }
+        // Before the units are set up: a list reading its per-draw data from the table needs it on its unit.
+        boolean table = single && MeshRows.prepare();
         if (!begin()) return;
         if (Census.on) Census.commands(cmds, indirect, drawCount, stride);
         boolean constant = false;
         try {
-            int most = 0;
-            boolean single = true;
-            for (int i = 0; i < drawCount; i++) {
-                long at = indirect + (long) i * stride;
-                if (at + 16 > cmds.size) break;
-                most = Math.max(most, Buf.intAt(cmds, at + 8) + Buf.intAt(cmds, at));
-                single &= Buf.intAt(cmds, at + 4) <= 1;
-            }
             NoAttribs.before(most);
             Vao.beginRun();
             shifted = 0;
-            // Single-instance commands draw plainly, their per-draw data set as constants (see PerDraw).
-            constant = single && PerDraw.begin();
-            // Per-instance data set as constants comes from the CPU copy, not from GL.
-            StreamWrites.beforeDraw(!constant);
+            // Single-instance commands draw plainly, their per-draw data from the table (MeshRows)
+            // or set as constants (PerDraw).
+            constant = !table && single && PerDraw.begin();
+            if (table) MeshRows.begin();
+            else MeshRows.plain();
+            // Per-instance data from the table or set as constants comes from the CPU copy, not from GL.
+            StreamWrites.beforeDraw(!constant && !table);
             int set = -1;
             for (int i = 0; i < drawCount; i++) {
                 long at = indirect + (long) i * stride;
@@ -319,7 +332,10 @@ final class Draw {
                     baseInstance = Buf.intAt(cmds, at + 12);
                 if (count <= 0 || instances <= 0) continue;
                 // Consecutive commands often share a base instance: only move the data when it changes.
-                if (constant) {
+                if (table) {
+                    if (baseInstance != set) MeshRows.set(set = baseInstance);
+                    GL11.glDrawArrays(mode, first, count);
+                } else if (constant) {
                     if (baseInstance != set) PerDraw.set(set = baseInstance);
                     GL11.glDrawArrays(mode, first, count);
                 } else {
@@ -330,6 +346,7 @@ final class Draw {
             }
         } finally {
             // Even when a command throws: put the instance arrays, the array buffer and attribute 0 back.
+            if (table) MeshRows.end();
             if (constant) PerDraw.end();
             if (shifted != 0) Vao.shiftInstances(0);
             shifted = 0;

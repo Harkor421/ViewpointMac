@@ -655,6 +655,7 @@ public final class G {
 
     public static void glDrawArrays(int mode, int first, int count) {
         if (!Draw.begin()) return;
+        MeshRows.plain();
         StreamWrites.beforeDraw(true);
         NoAttribs.before(first + count);
         GL11.glDrawArrays(mode, first, count);
@@ -664,6 +665,7 @@ public final class G {
 
     public static void glDrawArraysInstanced(int mode, int first, int count, int instances) {
         if (!Draw.begin()) return;
+        MeshRows.plain();
         StreamWrites.beforeDraw(true);
         NoAttribs.before(first + count);
         ARBDrawInstanced.glDrawArraysInstancedARB(mode, first, count, instances);
@@ -673,6 +675,7 @@ public final class G {
 
     public static void glDrawArraysInstancedBaseInstance(int mode, int first, int count, int instances, int baseInstance) {
         if (!Draw.begin()) return;
+        MeshRows.plain();
         StreamWrites.beforeDraw(true);
         Vao.shiftInstances(baseInstance);
         NoAttribs.before(first + count);

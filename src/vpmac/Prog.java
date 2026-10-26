@@ -60,6 +60,8 @@ final class Prog {
         int[] atlasTextures;
         /** All its packed textures read from the full-float sheet (it couldn't spare a unit for two sheets). */
         boolean atlasFullOnly;
+        /** Per-draw inputs it can read from {@link MeshRows}' table; null when it has none. */
+        MeshRows.Plan table;
         float[][] atlasSent;
         /** Uniforms that no longer exist in the program but Viewpoint still sets: merged, then packed. */
         final List<String> fake = new ArrayList<>();
@@ -288,6 +290,16 @@ final class Prog {
         }
         inspect(program, p);
         inspectRows(program, p);
+        java.util.Map<Integer, String> tableInputs = new java.util.TreeMap<>();
+        for (int sh : p.shaders) {
+            Shader s = shaders.get(sh);
+            if (s == null || s.result == null || s.type != VERTEX_SHADER) continue;
+            for (java.util.Map.Entry<String, Integer> e : s.result.locations.entrySet()) {
+                if (e.getKey().startsWith(Glsl.TABLE_INPUT)) tableInputs.put(e.getValue(), e.getKey().substring(Glsl.TABLE_INPUT.length()));
+            }
+        }
+        p.table = MeshRows.plan(program, tableInputs);
+        if (p.merged.contains(Glsl.TABLE)) p.mergedUnit.put(Glsl.TABLE, MeshRows.UNIT);
         if (currentId == program) current = p;
     }
 

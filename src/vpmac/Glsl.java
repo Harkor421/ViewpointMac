@@ -74,6 +74,18 @@ public final class Glsl {
     public static final String ROW_PREFIX = "vpmac_row_";
 
     /**
+     * Per-draw vertex inputs readable from a table ({@link MeshRows}): vec4 inputs from this
+     * location on, where Viewpoint's layouts keep per-draw data ({@code aMesh}, {@code aMeshFade},
+     * {@code aMeshBelow}; per-vertex data sits below it). Each is renamed {@link #TABLE_INPUT}
+     * and read through a function that takes {@link #TABLE} at the record {@link #RECORD} gives,
+     * plus its own texel ({@link #TABLE_AT}), while {@link #TABLE_ON} is set.
+     */
+    static final int FIRST_PER_DRAW = 6;
+    public static final String TABLE = "vpmac_table", TABLE_ON = "vpmac_table_on", TABLE_AT = "vpmac_at_",
+        TABLE_INPUT = "vpmac_in_", RECORD = "vpmac_record";
+    public static final int RECORD_LOCATION = 15;
+
+    /**
      * Sampler arrays cut down so a program fits the Mac's 16 texture units: Viewpoint's model
      * batches bind 16 textures and its atlas draws 8. Indexes past the cut are clamped.
      */
@@ -91,6 +103,9 @@ public final class Glsl {
     private static final Pattern LOCATION = Pattern.compile("location\\s*=\\s*(\\d+)");
     private static final Pattern BUFFER_UNIFORM = Pattern.compile("\\buniform\\s+([iu]?)samplerBuffer\\s+(\\w+)");
     private static final Pattern SHADOW_UNIFORM = Pattern.compile("\\buniform\\s+sampler2D(Array)?Shadow\\s+(\\w+)\\s*;");
+    private static final Pattern PER_DRAW_INPUT = Pattern.compile(
+        "(?m)^([ \\t]*)layout\\s*\\(\\s*location\\s*=\\s*(\\d+)\\s*\\)\\s*in\\s+vec4\\s+(\\w+)\\s*;([^\\n]*)$");
+    private static final Pattern RECORD_TAKEN = Pattern.compile("location\\s*=\\s*" + RECORD_LOCATION + "\\b");
 
     public static Result translate(String src, boolean vertex) {
         return translate(src, vertex, java.util.List.of());
@@ -123,6 +138,7 @@ public final class Glsl {
         s = PRECISION_WORD.matcher(s).replaceAll("");
         s = Preproc.resolve(s);
         s = oneDeclarationEach(s);
+        if (vertex) s = perDrawTable(s);
 
         Set<String> bufferSamplers = new LinkedHashSet<>();
         java.util.List<String> floats = new java.util.ArrayList<>();
@@ -369,6 +385,32 @@ public final class Glsl {
     }
 
     /** Turns the global in/out declarations into attribute/varying ones; leaves function parameters alone. */
+    /**
+     * Lets each per-draw vec4 input (see {@link #FIRST_PER_DRAW}) be read from the table: the
+     * input is renamed, and its old name becomes a call that picks the table or the attribute.
+     * The table is a float buffer sampler, so it folds into {@link #MERGED} with the shader's
+     * others. Left alone when location {@link #RECORD_LOCATION} is taken.
+     */
+    private static String perDrawTable(String s) {
+        if (s.contains(RECORD) || RECORD_TAKEN.matcher(s).find()) return s;
+        Matcher m = PER_DRAW_INPUT.matcher(s);
+        StringBuffer out = new StringBuffer(s.length() + 512);
+        int after = -1;
+        while (m.find()) {
+            if (Integer.parseInt(m.group(2)) < FIRST_PER_DRAW) continue;
+            String name = m.group(3);
+            m.appendReplacement(out, Matcher.quoteReplacement(m.group(1) + "layout(location = " + m.group(2) + ") in vec4 " + TABLE_INPUT + name + ";"
+                + m.group(4) + "\nuniform int " + TABLE_AT + name + ";\n#define " + name + " vpmac_perDraw(" + TABLE_AT + name + ", " + TABLE_INPUT + name + ")"));
+            after = out.length();
+        }
+        if (after < 0) return s;
+        m.appendTail(out);
+        out.insert(after, "\nuniform samplerBuffer " + TABLE + ";\nuniform int " + TABLE_ON + ";\n"
+            + "layout(location = " + RECORD_LOCATION + ") in float " + RECORD + ";\n"
+            + "vec4 vpmac_perDraw(int at, vec4 given) { return " + TABLE_ON + " != 0 ? texelFetch(" + TABLE + ", int(" + RECORD + ") + at) : given; }");
+        return out.toString();
+    }
+
     private static String rewriteGlobals(String s, boolean vertex, Map<String, Integer> locations) {
         StringBuilder out = new StringBuilder(s.length() + 256);
         int depth = 0;
